@@ -86,6 +86,23 @@ def test_extract_falls_back_to_env_vars(tmp_path: Path) -> None:
     assert got.password == "envpass"
 
 
+def test_extract_prefers_dedicated_webui_env_vars(tmp_path: Path) -> None:
+    p = _write(tmp_path, "[marketplace.facebook]\n")
+    with patch.dict(
+        os.environ,
+        {
+            "AIMM_WEBUI_USERNAME": "webadmin",
+            "AIMM_WEBUI_PASSWORD": "webpass",
+            "FACEBOOK_USERNAME": "fbuser",
+            "FACEBOOK_PASSWORD": "fbpass",
+        },
+        clear=True,
+    ):
+        got = extract_credentials([p])
+    assert got.username == "webadmin"
+    assert got.password == "webpass"
+
+
 def test_extract_config_takes_priority_over_env(tmp_path: Path) -> None:
     """Config credentials should win over environment variables."""
     p = _write(

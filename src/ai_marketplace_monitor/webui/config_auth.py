@@ -76,7 +76,15 @@ def extract_credentials(config_files: List[Path]) -> ExtractedCredentials:
             if isinstance(username, str) and isinstance(password, str) and username and password:
                 return ExtractedCredentials(username=username, password=password)
 
-    # Fallback: well-known environment variables (Facebook only for now).
+    # Prefer dedicated web UI credentials when the service is exposed through
+    # a reverse proxy. Reusing marketplace credentials would disclose the
+    # Facebook password to every web UI operator.
+    web_user = os.environ.get("AIMM_WEBUI_USERNAME")
+    web_pass = os.environ.get("AIMM_WEBUI_PASSWORD")
+    if web_user and web_pass:
+        return ExtractedCredentials(username=web_user, password=web_pass)
+
+    # Backwards-compatible fallback: well-known Facebook variables.
     fb_user = os.environ.get("FACEBOOK_USERNAME")
     fb_pass = os.environ.get("FACEBOOK_PASSWORD")
     if fb_user and fb_pass:

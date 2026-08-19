@@ -8,6 +8,8 @@
 (() => {
   const $ = (sel) => document.querySelector(sel);
   const $$ = (sel) => Array.from(document.querySelectorAll(sel));
+  const BASE_PATH = String(window.__AIMM_BASE_PATH__ || "").replace(/\/+$/, "");
+  const appPath = (path) => `${BASE_PATH}${path.startsWith("/") ? path : `/${path}`}`;
 
   const state = {
     csrf: null,
@@ -46,7 +48,7 @@
     if (opts.body && !(opts.body instanceof FormData)) {
       headers["Content-Type"] = "application/json";
     }
-    const res = await fetch(path, { ...opts, headers, credentials: "same-origin" });
+    const res = await fetch(appPath(path), { ...opts, headers, credentials: "same-origin" });
     if (res.status === 401) {
       showLogin();
       throw new Error("unauthenticated");
@@ -62,10 +64,12 @@
     $("#app").classList.add("hidden");
     // Fetch the auth mode so we can decide between login form and open mode.
     try {
-      const info = await (await fetch("/api/auth/info", { credentials: "same-origin" })).json();
+      const info = await (
+        await fetch(appPath("/api/auth/info"), { credentials: "same-origin" })
+      ).json();
       if (info.open) {
         // Open mode — no credentials configured, auto-login as anonymous.
-        const res = await fetch("/api/login", {
+        const res = await fetch(appPath("/api/login"), {
           method: "POST",
           body: new FormData(),
           credentials: "same-origin",
@@ -102,7 +106,11 @@
     body.set("username", form.username.value);
     body.set("password", form.password.value);
     try {
-      const res = await fetch("/api/login", { method: "POST", body, credentials: "same-origin" });
+      const res = await fetch(appPath("/api/login"), {
+        method: "POST",
+        body,
+        credentials: "same-origin",
+      });
       if (!res.ok) {
         const err = await res.json().catch(() => ({ detail: "Login failed" }));
         $("#login-error").textContent = err.detail || "Login failed";
@@ -1647,7 +1655,7 @@
 
   const connectWs = () => {
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
-    const ws = new WebSocket(`${proto}//${location.host}/ws/stream`);
+    const ws = new WebSocket(`${proto}//${location.host}${appPath("/ws/stream")}`);
     state.ws = ws;
     ws.onopen = () => {
       state.wsConnected = true;
@@ -1695,7 +1703,7 @@
   // If we already have a session cookie from a prior visit, try bootstrapping.
   (async () => {
     try {
-      const res = await fetch("/api/status", { credentials: "same-origin" });
+      const res = await fetch(appPath("/api/status"), { credentials: "same-origin" });
       if (res.ok) {
         state.csrf = getCookie("aimm_csrf");
         try {

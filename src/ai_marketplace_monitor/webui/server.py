@@ -31,7 +31,7 @@ from fastapi import (
     WebSocket,
     WebSocketDisconnect,
 )
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from ..utils import cache
@@ -65,6 +65,7 @@ class WebUIConfig:
     port: int = 8467
     config_files: List[Path] = field(default_factory=list)
     log_handler: LogBroadcastHandler | None = None
+    base_path: str = ""
 
 
 @dataclass
@@ -175,6 +176,7 @@ def create_app(
     config_service: ConfigFileService,
     log_handler: LogBroadcastHandler,
 ) -> FastAPI:
+    base_path = "/" + config.base_path.strip("/") if config.base_path.strip("/") else ""
     app = FastAPI(
         title="AI Marketplace Monitor",
         docs_url=None,
@@ -464,8 +466,12 @@ def create_app(
         app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
         @app.get("/")
-        async def index() -> FileResponse:
-            return FileResponse(STATIC_DIR / "index.html")
+        async def index() -> Response:
+            html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+            return Response(
+                html.replace("__AIMM_PUBLIC_BASE__", base_path),
+                media_type="text/html",
+            )
 
     # Sync def (not async): FastAPI runs it in a threadpool and Starlette
     # iterates the sync generator there too, so the blocking cache scan never
