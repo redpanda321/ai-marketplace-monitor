@@ -33,6 +33,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     VNC_PORT=5900 \
     AIMM_WEBUI_HOST=0.0.0.0 \
     AIMM_WEBUI_PORT=8467 \
+    AIMM_WEBUI_BASE_PATH=/ \
     AIMM_ENABLE_VNC=1 \
     AIMM_NOVNC_DIR=/usr/share/novnc \
     AIMM_VNC_HOST=127.0.0.1 \

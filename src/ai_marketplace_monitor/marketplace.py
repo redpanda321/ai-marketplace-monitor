@@ -20,6 +20,12 @@ from .utils import (
 
 class MarketPlace(Enum):
     FACEBOOK = "facebook"
+    CRAIGSLIST = "craigslist"
+    KIJIJI = "kijiji"
+    TESLA = "tesla"
+    CARGURUS = "cargurus"
+    CARPAGES = "carpages"
+    AUTOTRADER = "autotrader"
 
 
 @dataclass
@@ -377,10 +383,8 @@ class MarketplaceConfig(MarketItemCommonConfig):
             return
         if not isinstance(self.market_type, str):
             raise ValueError(f"Marketplace {hilight(self.market_type)} market must be a string.")
-        if self.market_type.lower() != MarketPlace.FACEBOOK.value:
-            raise ValueError(
-                f"Marketplace {hilight(self.market_type)} market must be {MarketPlace.FACEBOOK.value}."
-            )
+        if self.market_type.lower() not in {market.value for market in MarketPlace}:
+            raise ValueError(f"Marketplace {hilight(self.market_type)} is not supported.")
 
     def handle_language(self: "MarketplaceConfig") -> None:
         if self.language is None:

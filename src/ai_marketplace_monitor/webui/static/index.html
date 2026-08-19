@@ -4,9 +4,9 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>AI Marketplace Monitor</title>
-  <link rel="stylesheet" href="/static/vendor/codemirror.css" />
-  <link rel="stylesheet" href="/static/vendor/dialog.css" />
-  <link rel="stylesheet" href="/static/app.css" />
+  <link rel="stylesheet" href="__AIMM_PUBLIC_BASE__/static/vendor/codemirror.css" />
+  <link rel="stylesheet" href="__AIMM_PUBLIC_BASE__/static/vendor/dialog.css" />
+  <link rel="stylesheet" href="__AIMM_PUBLIC_BASE__/static/app.css" />
   <link rel="icon" href="data:," />
 </head>
 <body>
@@ -34,7 +34,7 @@
       <div class="header-right">
         <span id="monitor-status" class="status-chip status-warn" title="Last activity from the monitor">● monitor: idle</span>
         <button id="restart-btn" class="ghost small" title="Wake up and search all items now" aria-label="Wake up and search all items now">▶</button>
-        <a id="browser-btn" class="ghost" href="/vnc/vnc.html?path=ws/vnc&autoconnect=1&resize=scale" target="_blank" rel="noopener" title="Open the live Chromium view (CAPTCHA / login)" hidden>Browser</a>
+        <a id="browser-btn" class="ghost" href="__AIMM_PUBLIC_BASE__/vnc/vnc.html?path=__AIMM_PUBLIC_BASE__/ws/vnc&autoconnect=1&resize=scale" target="_blank" rel="noopener" title="Open the live Chromium view (CAPTCHA / login)" hidden>Browser</a>
         <button id="export-csv-btn" class="ghost small" title="Download all found items as CSV" aria-label="Download all found items as CSV">⬇ Export CSV</button>
         <button id="logout-btn" class="ghost">Logout</button>
       </div>
@@ -125,7 +125,7 @@
     so the classic app.js script can call it after init resolves.
   -->
   <script type="module">
-    import init, { parse, edit, stringify } from "/static/vendor/toml-edit-js/shims.js";
+    import init, { parse, edit, stringify } from "__AIMM_PUBLIC_BASE__/static/vendor/toml-edit-js/shims.js";
     window.tomlEditReady = (async () => {
       try {
         await init();
@@ -138,7 +138,8 @@
       }
     })();
   </script>
-  <script src="/static/vendor/codemirror.js"></script>
-  <script src="/static/app.js"></script>
+  <script>window.__AIMM_BASE_PATH__ = "__AIMM_PUBLIC_BASE__";</script>
+  <script src="__AIMM_PUBLIC_BASE__/static/vendor/codemirror.js"></script>
+  <script src="__AIMM_PUBLIC_BASE__/static/app.js"></script>
 </body>
 </html>
