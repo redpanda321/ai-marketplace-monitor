@@ -55,6 +55,7 @@ from .auth import (
 from .config_api import ConfigFileService
 from .config_auth import extract_credentials
 from .found_export import iter_found_csv, iter_found_rows
+from .hanggent_integration import HanggentIntegrationService, HanggentWatch
 from .log_handler import LogBroadcastHandler
 
 # Ensure the vendored toml-edit-js WASM bundle is served with the right
@@ -223,6 +224,7 @@ def create_app(
     process_secret = secrets.token_urlsafe(32)
     sessions = SessionManager(process_secret)
     rate_limiter = RateLimiter()
+    hanggent_integration = HanggentIntegrationService(config_service)
 
     def is_open() -> bool:
         """True when running on loopback — no password required."""
@@ -256,6 +258,17 @@ def create_app(
         if username.startswith("hanggent:"):
             raise HTTPException(status_code=403, detail="Configuration access is restricted")
         return username
+
+    def require_integration_token(request: Request) -> None:
+        expected = os.environ.get("AIMM_INTEGRATION_TOKEN", "")
+        authorization = request.headers.get("authorization", "")
+        supplied = authorization.removeprefix("Bearer ").strip()
+        if not expected:
+            raise HTTPException(status_code=503, detail="Hanggent integration is not configured")
+        if not authorization.startswith("Bearer ") or not secrets.compare_digest(
+            supplied, expected
+        ):
+            raise HTTPException(status_code=401, detail="Invalid integration token")
 
     # ------------------------------------------------------------------
     # Routes
@@ -337,6 +350,76 @@ def create_app(
         if can_manage_config:
             result["config_files"] = [f.__dict__ for f in config_service.list_files()]
         return result
+
+    @app.put("/api/integration/watches/{watch_key}")
+    async def put_integration_watch(
+        watch_key: str,
+        body: Dict[str, Any],
+        _: None = Depends(require_integration_token),
+    ) -> Dict[str, Any]:
+        try:
+            phrases = body.get("search_phrases")
+            if not isinstance(phrases, list) or not all(
+                isinstance(value, str) for value in phrases
+            ):
+                raise ValueError("search_phrases must be a list of strings")
+            hanggent_integration.upsert(
+                watch_key,
+                HanggentWatch(
+                    search_phrases=phrases,
+                    search_region=str(body.get("search_region", "")),
+                    search_interval=str(body.get("search_interval", "60m")),
+                    min_price=body.get("min_price")
+                    if isinstance(body.get("min_price"), int)
+                    else None,
+                    max_price=body.get("max_price")
+                    if isinstance(body.get("max_price"), int)
+                    else None,
+                    enabled=body.get("enabled", True) is True,
+                ),
+            )
+            return {"ok": True, "watch_key": watch_key}
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.delete("/api/integration/watches/{watch_key}")
+    async def delete_integration_watch(
+        watch_key: str, _: None = Depends(require_integration_token)
+    ) -> Dict[str, Any]:
+        try:
+            hanggent_integration.delete(watch_key)
+            return {"ok": True}
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/integration/watches/{watch_key}/run")
+    async def run_integration_watch(
+        watch_key: str, _: None = Depends(require_integration_token)
+    ) -> Dict[str, Any]:
+        try:
+            hanggent_integration.validate_key(watch_key)
+            hanggent_integration.wake()
+            return {"ok": True}
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail=f"Failed to wake monitor: {exc}") from exc
+
+    @app.get("/api/integration/watches/{watch_key}/results")
+    def get_integration_results(
+        watch_key: str,
+        limit: int = 100,
+        _: None = Depends(require_integration_token),
+    ) -> Dict[str, Any]:
+        try:
+            hanggent_integration.validate_key(watch_key)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        capped_limit = max(1, min(limit, 500))
+        rows = [row for row in iter_found_rows(cache) if row.get("item") == watch_key]
+        return {"results": rows[:capped_limit]}
 
     @app.get("/api/config/files")
     async def list_config_files(_: str = Depends(require_config_admin)) -> Dict[str, Any]:
