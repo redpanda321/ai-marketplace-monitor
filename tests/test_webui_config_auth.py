@@ -87,7 +87,10 @@ def test_extract_falls_back_to_env_vars(tmp_path: Path) -> None:
 
 
 def test_extract_prefers_dedicated_webui_env_vars(tmp_path: Path) -> None:
-    p = _write(tmp_path, "[marketplace.facebook]\n")
+    p = _write(
+        tmp_path,
+        '[marketplace.facebook]\nusername = "cfguser"\npassword = "cfgpass"\n',
+    )
     with patch.dict(
         os.environ,
         {
@@ -101,6 +104,22 @@ def test_extract_prefers_dedicated_webui_env_vars(tmp_path: Path) -> None:
         got = extract_credentials([p])
     assert got.username == "webadmin"
     assert got.password == "webpass"
+
+
+def test_extract_ignores_unexpanded_config_placeholders(tmp_path: Path) -> None:
+    p = _write(
+        tmp_path,
+        '[marketplace.facebook]\nusername = "${FACEBOOK_USERNAME}"\n'
+        'password = "${FACEBOOK_PASSWORD}"\n',
+    )
+    with patch.dict(
+        os.environ,
+        {"FACEBOOK_USERNAME": "envuser", "FACEBOOK_PASSWORD": "envpass"},
+        clear=True,
+    ):
+        got = extract_credentials([p])
+    assert got.username == "envuser"
+    assert got.password == "envpass"
 
 
 def test_extract_config_takes_priority_over_env(tmp_path: Path) -> None:
