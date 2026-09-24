@@ -251,6 +251,12 @@ def create_app(
         if not header or not csrf_cookie or not secrets.compare_digest(header, csrf_cookie):
             raise HTTPException(status_code=403, detail="CSRF token mismatch")
 
+    def require_config_admin(username: str = Depends(require_session)) -> str:
+        """Keep config contents limited to local and dedicated admin sessions."""
+        if username.startswith("hanggent:"):
+            raise HTTPException(status_code=403, detail="Configuration access is restricted")
+        return username
+
     # ------------------------------------------------------------------
     # Routes
     # ------------------------------------------------------------------
@@ -318,23 +324,28 @@ def create_app(
         return {"ok": True}
 
     @app.get("/api/status")
-    async def status(_: str = Depends(require_session)) -> Dict[str, Any]:
-        files = config_service.list_files()
-        return {
-            "config_files": [f.__dict__ for f in files],
+    async def status(username: str = Depends(require_session)) -> Dict[str, Any]:
+        can_manage_config = not username.startswith("hanggent:")
+        result: Dict[str, Any] = {
             "urls": _enumerate_urls(config.host, config.port),
             "auth_mode": "open" if is_open() else "authenticated",
             "open": is_open(),
+            "can_manage_config": can_manage_config,
             "vnc_enabled": os.environ.get("AIMM_ENABLE_VNC") == "1"
             and Path(os.environ.get("AIMM_NOVNC_DIR", "/usr/share/novnc")).is_dir(),
         }
+        if can_manage_config:
+            result["config_files"] = [f.__dict__ for f in config_service.list_files()]
+        return result
 
     @app.get("/api/config/files")
-    async def list_config_files(_: str = Depends(require_session)) -> Dict[str, Any]:
+    async def list_config_files(_: str = Depends(require_config_admin)) -> Dict[str, Any]:
         return {"files": [f.__dict__ for f in config_service.list_files()]}
 
     @app.get("/api/config/file/{file_id}")
-    async def get_config_file(file_id: str, _: str = Depends(require_session)) -> Dict[str, Any]:
+    async def get_config_file(
+        file_id: str, _: str = Depends(require_config_admin)
+    ) -> Dict[str, Any]:
         try:
             content, mtime = config_service.read(file_id)
         except KeyError as e:
@@ -365,7 +376,7 @@ def create_app(
     async def put_config_file(
         file_id: str,
         body: Dict[str, Any],
-        _: str = Depends(require_session),
+        _: str = Depends(require_config_admin),
         __: None = Depends(require_csrf),
     ) -> Dict[str, Any]:
         content = body.get("content")
@@ -389,7 +400,7 @@ def create_app(
     @app.post("/api/config/validate")
     async def validate_config(
         body: Dict[str, Any],
-        _: str = Depends(require_session),
+        _: str = Depends(require_config_admin),
         __: None = Depends(require_csrf),
     ) -> Dict[str, Any]:
         content = body.get("content")

@@ -1687,12 +1687,16 @@
   // ---------------------------------------------------------------
   // Boot
   // ---------------------------------------------------------------
-  const bootstrap = async () => {
+  const bootstrap = async (status = null) => {
     try {
-      await loadConfig();
-      // CodeMirror needs a refresh after becoming visible (the editor
-      // host is hidden during the login screen).
-      if (editor.refresh) editor.refresh();
+      const canManageConfig = !status || status.can_manage_config !== false;
+      $("#app").classList.toggle("viewer-mode", !canManageConfig);
+      if (canManageConfig) {
+        await loadConfig();
+        // CodeMirror needs a refresh after becoming visible (the editor
+        // host is hidden during the login screen).
+        if (editor.refresh) editor.refresh();
+      }
       await loadLogs();
       connectWs();
     } catch (err) {
@@ -1712,7 +1716,7 @@
           if (browserBtn && status && status.vnc_enabled) browserBtn.hidden = false;
         } catch (_) {}
         hideLogin();
-        await bootstrap();
+        await bootstrap(status);
       } else {
         showLogin();
       }

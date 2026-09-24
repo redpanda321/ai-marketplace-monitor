@@ -75,7 +75,12 @@ def test_hanggent_session_exchange_authenticates_webui(
 
     assert exchanged.status_code == 200
     assert client.cookies.get("aimm_session")
-    assert client.get("/api/status").status_code == 200
+    status = client.get("/api/status")
+    assert status.status_code == 200
+    assert status.json()["can_manage_config"] is False
+    assert "config_files" not in status.json()
+    assert client.get("/api/config/files").status_code == 403
+    assert client.get("/api/config/file/primary").status_code == 403
 
 
 def test_hanggent_session_exchange_rejects_invalid_token(

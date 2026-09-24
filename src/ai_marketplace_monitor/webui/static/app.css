@@ -188,6 +188,16 @@ html, body {
   min-height: 0;
 }
 
+.app.viewer-mode .config-name,
+.app.viewer-mode .editor-pane,
+.app.viewer-mode #mtime {
+  display: none;
+}
+
+.app.viewer-mode .main {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 /* -------- Editor pane -------- */
 .editor-pane {
   display: flex;
