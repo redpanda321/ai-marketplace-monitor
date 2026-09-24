@@ -210,7 +210,13 @@
   };
 
   const loadConfig = async () => {
-    const files = await (await api("/api/config/files")).json();
+    const response = await api("/api/config/files");
+    if (response.status === 403) {
+      $("#app").classList.add("viewer-mode");
+      return false;
+    }
+    if (!response.ok) throw new Error(`Config request failed (${response.status})`);
+    const files = await response.json();
     if (!files.files.length) return;
     const f = files.files[0];
     state.fileId = f.id;
@@ -240,6 +246,7 @@
     } else {
       setEditorStatus("");
     }
+    return true;
   };
 
   const validateConfig = async () => {
@@ -1710,8 +1717,9 @@
       const res = await fetch(appPath("/api/status"), { credentials: "same-origin" });
       if (res.ok) {
         state.csrf = getCookie("aimm_csrf");
+        let status = null;
         try {
-          const status = await res.clone().json();
+          status = await res.clone().json();
           const browserBtn = document.getElementById("browser-btn");
           if (browserBtn && status && status.vnc_enabled) browserBtn.hidden = false;
         } catch (_) {}

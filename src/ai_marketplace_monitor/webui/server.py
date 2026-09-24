@@ -529,13 +529,19 @@ def create_app(
     # ------------------------------------------------------------------
     if STATIC_DIR.exists():
         app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+        static_version = hashlib.sha256(
+            (STATIC_DIR / "app.js").read_bytes() + (STATIC_DIR / "app.css").read_bytes()
+        ).hexdigest()[:12]
 
         @app.get("/")
         async def index() -> Response:
             html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
             return Response(
-                html.replace("__AIMM_PUBLIC_BASE__", base_path),
+                html.replace("__AIMM_PUBLIC_BASE__", base_path).replace(
+                    "__AIMM_STATIC_VERSION__", static_version
+                ),
                 media_type="text/html",
+                headers={"Cache-Control": "no-store"},
             )
 
     # Sync def (not async): FastAPI runs it in a threadpool and Starlette

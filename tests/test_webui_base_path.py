@@ -2,6 +2,7 @@ import base64
 import hashlib
 import hmac
 import json
+import re
 import time
 from pathlib import Path
 
@@ -39,8 +40,10 @@ def test_index_renders_reverse_proxy_base_path(tmp_path: Path) -> None:
 
     assert response.status_code == 200
     assert 'window.__AIMM_BASE_PATH__ = "/marketplace-monitor"' in response.text
-    assert 'src="/marketplace-monitor/static/app.js"' in response.text
+    assert re.search(r'src="/marketplace-monitor/static/app\.js\?v=[0-9a-f]{12}"', response.text)
+    assert response.headers["cache-control"] == "no-store"
     assert "__AIMM_PUBLIC_BASE__" not in response.text
+    assert "__AIMM_STATIC_VERSION__" not in response.text
 
 
 def test_index_uses_root_paths_without_prefix(tmp_path: Path) -> None:
@@ -54,7 +57,7 @@ def test_index_uses_root_paths_without_prefix(tmp_path: Path) -> None:
 
     assert response.status_code == 200
     assert 'window.__AIMM_BASE_PATH__ = ""' in response.text
-    assert 'src="/static/app.js"' in response.text
+    assert re.search(r'src="/static/app\.js\?v=[0-9a-f]{12}"', response.text)
 
 
 def test_hanggent_session_exchange_authenticates_webui(
