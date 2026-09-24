@@ -8,7 +8,13 @@ from the main thread to that loop via ``loop.call_soon_threadsafe``.
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
+import hashlib
+import hmac
+import json
 import logging
+import math
 import mimetypes
 import os
 import secrets
@@ -57,6 +63,36 @@ from .log_handler import LogBroadcastHandler
 mimetypes.add_type("application/wasm", ".wasm")
 
 STATIC_DIR = Path(__file__).parent / "static"
+
+
+def _verify_hanggent_token(token: str, secret: str) -> str | None:
+    """Verify a Hanggent HS256 access token and return its user id."""
+    try:
+        encoded_header, encoded_payload, encoded_signature = token.split(".")
+        signing_input = f"{encoded_header}.{encoded_payload}".encode()
+        expected = hmac.new(secret.encode(), signing_input, hashlib.sha256).digest()
+        signature = base64.urlsafe_b64decode(
+            encoded_signature + "=" * (-len(encoded_signature) % 4)
+        )
+        if not hmac.compare_digest(signature, expected):
+            return None
+        header = json.loads(
+            base64.urlsafe_b64decode(encoded_header + "=" * (-len(encoded_header) % 4))
+        )
+        payload = json.loads(
+            base64.urlsafe_b64decode(encoded_payload + "=" * (-len(encoded_payload) % 4))
+        )
+        expires_at = float(payload["exp"])
+        if (
+            header.get("alg") != "HS256"
+            or not math.isfinite(expires_at)
+            or expires_at <= time.time()
+        ):
+            return None
+        user_id = payload.get("id")
+        return str(user_id) if isinstance(user_id, int) and user_id > 0 else None
+    except (binascii.Error, KeyError, TypeError, UnicodeDecodeError, ValueError):
+        return None
 
 
 @dataclass
@@ -256,6 +292,24 @@ def create_app(
         token, csrf = sessions.issue(username)
         _set_session_cookies(response, token, csrf)
         return {"username": username, "csrf": csrf}
+
+    @app.post("/api/hanggent/session")
+    async def hanggent_session(request: Request, response: Response) -> Dict[str, Any]:
+        """Exchange a signed Hanggent access token for a WebUI session."""
+        shared_secret = os.environ.get("AIMM_HANGGENT_JWT_SECRET", "")
+        authorization = request.headers.get("authorization", "")
+        if not shared_secret:
+            raise HTTPException(status_code=503, detail="Hanggent SSO is not configured")
+        if not authorization.startswith("Bearer "):
+            raise HTTPException(status_code=401, detail="Hanggent token required")
+        user_id = _verify_hanggent_token(
+            authorization.removeprefix("Bearer ").strip(), shared_secret
+        )
+        if user_id is None:
+            raise HTTPException(status_code=401, detail="Invalid Hanggent token")
+        token, csrf = sessions.issue(f"hanggent:{user_id}")
+        _set_session_cookies(response, token, csrf)
+        return {"username": f"hanggent:{user_id}", "csrf": csrf}
 
     @app.post("/api/logout")
     async def logout(response: Response) -> Dict[str, Any]:
