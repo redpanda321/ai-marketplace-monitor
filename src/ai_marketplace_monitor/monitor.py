@@ -275,9 +275,17 @@ class MarketplaceMonitor:
                 CounterItem.NEW_VALIDATED_LISTING, item_config.name, len(new_listings)
             )
             for user in users_to_notify:
-                User(self.config.user[user], logger=self.logger).notify(
+                notification_user = User(self.config.user[user], logger=self.logger)
+                notification_user.notify(
                     new_listings, listing_ratings, item_config
                 )
+                # Hanggent consumes matches through the private results API and
+                # intentionally configures no AIMM notification transport.
+                # Persist those accepted listings so the per-user API can
+                # return them to Car Search.
+                if not notification_user.config.notify_with:
+                    for listing in new_listings:
+                        notification_user.to_cache(listing)
         time.sleep(5)
 
     def _select_translator(
@@ -602,6 +610,45 @@ class MarketplaceMonitor:
 
                 self.handle_pause()
                 schedule.run_pending()
+
+    def run_item_once(self: "MarketplaceMonitor", item_name: str) -> None:
+        """Run one configured item and exit.
+
+        Hanggent uses this bounded entry point for tenant-isolated scans.  Each
+        worker has its own ``AIMM_HOME``, configuration and disk cache, so a
+        Facebook account and its results can never cross user boundaries.
+        """
+        self.keyboard_monitor = KeyboardMonitor()
+        self.keyboard_monitor.start()
+        self.load_config_file()
+        assert self.config is not None
+        if item_name not in self.config.item:
+            raise ValueError(f"Item {item_name} not found in tenant configuration")
+        item_config = self.config.item[item_name]
+        if item_config.enabled is False:
+            raise ValueError(f"Item {item_name} is disabled")
+        self.browser = self._launch_browser()
+        self.load_ai_agents()
+        for marketplace_config in self.config.marketplace.values():
+            if marketplace_config.enabled is False:
+                continue
+            if item_config.marketplace not in (None, marketplace_config.name):
+                continue
+            marketplace_class = supported_marketplaces[marketplace_config.name]
+            marketplace = marketplace_class(
+                marketplace_config.name,
+                self.browser,
+                self.keyboard_monitor,
+                self.logger,
+            )
+            self.active_marketplaces[marketplace_config.name] = marketplace
+            marketplace.configure(
+                marketplace_config,
+                translator=self._select_translator(marketplace_config.language),
+            )
+            self.search_item(marketplace_config, marketplace, item_config)
+            return
+        raise ValueError(f"No enabled marketplace is available for item {item_name}")
 
     def stop_monitor(self: "MarketplaceMonitor") -> None:
         """Stop the monitor."""

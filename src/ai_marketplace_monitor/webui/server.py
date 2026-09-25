@@ -224,7 +224,7 @@ def create_app(
     process_secret = secrets.token_urlsafe(32)
     sessions = SessionManager(process_secret)
     rate_limiter = RateLimiter()
-    hanggent_integration = HanggentIntegrationService(config_service)
+    hanggent_integration = HanggentIntegrationService()
 
     def is_open() -> bool:
         """True when running on loopback — no password required."""
@@ -384,6 +384,18 @@ def create_app(
         except RuntimeError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
+    @app.put("/api/integration/users/{user_id}/settings")
+    async def put_integration_settings(
+        user_id: int,
+        body: Dict[str, Any],
+        _: None = Depends(require_integration_token),
+    ) -> Dict[str, Any]:
+        try:
+            hanggent_integration.update_settings(user_id, body)
+            return {"ok": True, "user_id": user_id}
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     @app.delete("/api/integration/watches/{watch_key}")
     async def delete_integration_watch(
         watch_key: str, _: None = Depends(require_integration_token)
@@ -400,8 +412,8 @@ def create_app(
     ) -> Dict[str, Any]:
         try:
             hanggent_integration.validate_key(watch_key)
-            hanggent_integration.wake()
-            return {"ok": True}
+            started = hanggent_integration.run(watch_key)
+            return {"ok": True, "started": started}
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except OSError as exc:
@@ -418,7 +430,7 @@ def create_app(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         capped_limit = max(1, min(limit, 500))
-        rows = [row for row in iter_found_rows(cache) if row.get("item") == watch_key]
+        rows = hanggent_integration.results(watch_key, capped_limit)
         return {"results": rows[:capped_limit]}
 
     @app.get("/api/config/files")
