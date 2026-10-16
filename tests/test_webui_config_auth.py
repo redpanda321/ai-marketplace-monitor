@@ -55,6 +55,17 @@ def test_extract_returns_creds_from_any_marketplace(tmp_path: Path) -> None:
     assert got.password == "y"
 
 
+def test_extract_expands_environment_references_in_config(tmp_path: Path) -> None:
+    p = _write(
+        tmp_path,
+        '[marketplace.facebook]\nusername = "${FACEBOOK_USERNAME}"\npassword = "${FACEBOOK_PASSWORD}"\n',
+    )
+    with patch.dict(os.environ, {"FACEBOOK_USERNAME": "buyer@example.com", "FACEBOOK_PASSWORD": "secret"}):
+        got = extract_credentials([p])
+    assert got.username == "buyer@example.com"
+    assert got.password == "secret"
+
+
 def test_extract_tolerates_malformed_file(tmp_path: Path) -> None:
     p = _write(tmp_path, "not valid = = toml")
     got = extract_credentials([p])
