@@ -45,7 +45,9 @@ from watchdog.events import FileSystemEvent, FileSystemEventHandler
 from watchdog.observers import Observer
 
 # home directory for all settings and caches
-amm_home = Path.home() / ".ai-marketplace-monitor"
+amm_home = Path(
+    os.environ.get("AIMM_HOME", str(Path.home() / ".ai-marketplace-monitor"))
+).expanduser().resolve()
 amm_home.mkdir(parents=True, exist_ok=True)
 
 cache = Cache(amm_home)

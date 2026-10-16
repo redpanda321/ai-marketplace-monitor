@@ -57,6 +57,23 @@ AI: Great deal; A well-priced, well-maintained camera meets all search criteria,
 - Filter by price and location
 - Exclude irrelevant results and spammers
 - Support for different Facebook Marketplace layouts
+- Configurable public-web connectors with normalized seller type and drivetrain
+
+**Vehicle source policy**
+
+| Source | Default | Collection path |
+|---|---:|---|
+| Facebook Marketplace | Enabled | Authenticated Playwright connector |
+| Craigslist | Enabled | Public search and listing pages |
+| Carpages | Disabled | Public connector; enable after configuring verified selectors |
+| Kijiji | Disabled | Requires an authorized public source because vehicle search/RSS is disallowed by robots.txt |
+| Tesla | Disabled | Requires authorized inventory access; robots access is denied |
+| CarGurus | Disabled | Requires an authorized public source; search and listing APIs are disallowed |
+| AutoTrader.ca | Disabled | Requires an authorized public source; `/lst` and listing-search APIs are disallowed |
+
+Disabled connectors are included in the generated config so an authorized HTML source can be
+attached without changing monitor code. The monitor does not bypass CAPTCHAs, private APIs,
+or published crawler restrictions.
 
 🤖 **AI-Powered**
 
@@ -145,6 +162,11 @@ Then open [http://localhost:8467](http://localhost:8467). When Facebook needs an
 Mounting `~/.ai-marketplace-monitor` shares your existing config, cache, and logs between the host install and the container — so you can switch back and forth freely. Update with `docker pull ghcr.io/bopeng/ai-marketplace-monitor:latest && docker restart aimm`.
 
 To build the image yourself instead of pulling: `docker build -t aimm .` from a checkout of this repo.
+
+For a reverse-proxy deployment under a path such as `/marketplace-monitor`, set
+`AIMM_WEBUI_BASE_PATH=/marketplace-monitor`. Use dedicated
+`AIMM_WEBUI_USERNAME` and `AIMM_WEBUI_PASSWORD` values to protect the UI instead
+of sharing the Facebook account password with UI operators.
 
 ## 💡 Example Usage
 

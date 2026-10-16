@@ -8,7 +8,13 @@ from the main thread to that loop via ``loop.call_soon_threadsafe``.
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
+import hashlib
+import hmac
+import json
 import logging
+import math
 import mimetypes
 import os
 import secrets
@@ -31,7 +37,7 @@ from fastapi import (
     WebSocket,
     WebSocketDisconnect,
 )
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from ..utils import cache
@@ -49,6 +55,7 @@ from .auth import (
 from .config_api import ConfigFileService
 from .config_auth import extract_credentials
 from .found_export import iter_found_csv, iter_found_rows
+from .hanggent_integration import HanggentIntegrationService, HanggentWatch
 from .log_handler import LogBroadcastHandler
 
 # Ensure the vendored toml-edit-js WASM bundle is served with the right
@@ -59,12 +66,43 @@ mimetypes.add_type("application/wasm", ".wasm")
 STATIC_DIR = Path(__file__).parent / "static"
 
 
+def _verify_hanggent_token(token: str, secret: str) -> str | None:
+    """Verify a Hanggent HS256 access token and return its user id."""
+    try:
+        encoded_header, encoded_payload, encoded_signature = token.split(".")
+        signing_input = f"{encoded_header}.{encoded_payload}".encode()
+        expected = hmac.new(secret.encode(), signing_input, hashlib.sha256).digest()
+        signature = base64.urlsafe_b64decode(
+            encoded_signature + "=" * (-len(encoded_signature) % 4)
+        )
+        if not hmac.compare_digest(signature, expected):
+            return None
+        header = json.loads(
+            base64.urlsafe_b64decode(encoded_header + "=" * (-len(encoded_header) % 4))
+        )
+        payload = json.loads(
+            base64.urlsafe_b64decode(encoded_payload + "=" * (-len(encoded_payload) % 4))
+        )
+        expires_at = float(payload["exp"])
+        if (
+            header.get("alg") != "HS256"
+            or not math.isfinite(expires_at)
+            or expires_at <= time.time()
+        ):
+            return None
+        user_id = payload.get("id")
+        return str(user_id) if isinstance(user_id, int) and user_id > 0 else None
+    except (binascii.Error, KeyError, TypeError, UnicodeDecodeError, ValueError):
+        return None
+
+
 @dataclass
 class WebUIConfig:
     host: str = "127.0.0.1"
     port: int = 8467
     config_files: List[Path] = field(default_factory=list)
     log_handler: LogBroadcastHandler | None = None
+    base_path: str = ""
 
 
 @dataclass
@@ -175,6 +213,7 @@ def create_app(
     config_service: ConfigFileService,
     log_handler: LogBroadcastHandler,
 ) -> FastAPI:
+    base_path = "/" + config.base_path.strip("/") if config.base_path.strip("/") else ""
     app = FastAPI(
         title="AI Marketplace Monitor",
         docs_url=None,
@@ -185,6 +224,7 @@ def create_app(
     process_secret = secrets.token_urlsafe(32)
     sessions = SessionManager(process_secret)
     rate_limiter = RateLimiter()
+    hanggent_integration = HanggentIntegrationService()
 
     def is_open() -> bool:
         """True when running on loopback — no password required."""
@@ -212,6 +252,23 @@ def create_app(
         header = request.headers.get(CSRF_HEADER)
         if not header or not csrf_cookie or not secrets.compare_digest(header, csrf_cookie):
             raise HTTPException(status_code=403, detail="CSRF token mismatch")
+
+    def require_config_admin(username: str = Depends(require_session)) -> str:
+        """Keep config contents limited to local and dedicated admin sessions."""
+        if username.startswith("hanggent:"):
+            raise HTTPException(status_code=403, detail="Configuration access is restricted")
+        return username
+
+    def require_integration_token(request: Request) -> None:
+        expected = os.environ.get("AIMM_INTEGRATION_TOKEN", "")
+        authorization = request.headers.get("authorization", "")
+        supplied = authorization.removeprefix("Bearer ").strip()
+        if not expected:
+            raise HTTPException(status_code=503, detail="Hanggent integration is not configured")
+        if not authorization.startswith("Bearer ") or not secrets.compare_digest(
+            supplied, expected
+        ):
+            raise HTTPException(status_code=401, detail="Invalid integration token")
 
     # ------------------------------------------------------------------
     # Routes
@@ -255,6 +312,24 @@ def create_app(
         _set_session_cookies(response, token, csrf)
         return {"username": username, "csrf": csrf}
 
+    @app.post("/api/hanggent/session")
+    async def hanggent_session(request: Request, response: Response) -> Dict[str, Any]:
+        """Exchange a signed Hanggent access token for a WebUI session."""
+        shared_secret = os.environ.get("AIMM_HANGGENT_JWT_SECRET", "")
+        authorization = request.headers.get("authorization", "")
+        if not shared_secret:
+            raise HTTPException(status_code=503, detail="Hanggent SSO is not configured")
+        if not authorization.startswith("Bearer "):
+            raise HTTPException(status_code=401, detail="Hanggent token required")
+        user_id = _verify_hanggent_token(
+            authorization.removeprefix("Bearer ").strip(), shared_secret
+        )
+        if user_id is None:
+            raise HTTPException(status_code=401, detail="Invalid Hanggent token")
+        token, csrf = sessions.issue(f"hanggent:{user_id}")
+        _set_session_cookies(response, token, csrf)
+        return {"username": f"hanggent:{user_id}", "csrf": csrf}
+
     @app.post("/api/logout")
     async def logout(response: Response) -> Dict[str, Any]:
         response.delete_cookie(SESSION_COOKIE)
@@ -262,23 +337,110 @@ def create_app(
         return {"ok": True}
 
     @app.get("/api/status")
-    async def status(_: str = Depends(require_session)) -> Dict[str, Any]:
-        files = config_service.list_files()
-        return {
-            "config_files": [f.__dict__ for f in files],
+    async def status(username: str = Depends(require_session)) -> Dict[str, Any]:
+        can_manage_config = not username.startswith("hanggent:")
+        result: Dict[str, Any] = {
             "urls": _enumerate_urls(config.host, config.port),
             "auth_mode": "open" if is_open() else "authenticated",
             "open": is_open(),
+            "can_manage_config": can_manage_config,
             "vnc_enabled": os.environ.get("AIMM_ENABLE_VNC") == "1"
             and Path(os.environ.get("AIMM_NOVNC_DIR", "/usr/share/novnc")).is_dir(),
         }
+        if can_manage_config:
+            result["config_files"] = [f.__dict__ for f in config_service.list_files()]
+        return result
+
+    @app.put("/api/integration/watches/{watch_key}")
+    async def put_integration_watch(
+        watch_key: str,
+        body: Dict[str, Any],
+        _: None = Depends(require_integration_token),
+    ) -> Dict[str, Any]:
+        try:
+            phrases = body.get("search_phrases")
+            if not isinstance(phrases, list) or not all(
+                isinstance(value, str) for value in phrases
+            ):
+                raise ValueError("search_phrases must be a list of strings")
+            hanggent_integration.upsert(
+                watch_key,
+                HanggentWatch(
+                    search_phrases=phrases,
+                    search_region=str(body.get("search_region", "")),
+                    search_interval=str(body.get("search_interval", "60m")),
+                    min_price=body.get("min_price")
+                    if isinstance(body.get("min_price"), int)
+                    else None,
+                    max_price=body.get("max_price")
+                    if isinstance(body.get("max_price"), int)
+                    else None,
+                    enabled=body.get("enabled", True) is True,
+                ),
+            )
+            return {"ok": True, "watch_key": watch_key}
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.put("/api/integration/users/{user_id}/settings")
+    async def put_integration_settings(
+        user_id: int,
+        body: Dict[str, Any],
+        _: None = Depends(require_integration_token),
+    ) -> Dict[str, Any]:
+        try:
+            hanggent_integration.update_settings(user_id, body)
+            return {"ok": True, "user_id": user_id}
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.delete("/api/integration/watches/{watch_key}")
+    async def delete_integration_watch(
+        watch_key: str, _: None = Depends(require_integration_token)
+    ) -> Dict[str, Any]:
+        try:
+            hanggent_integration.delete(watch_key)
+            return {"ok": True}
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/integration/watches/{watch_key}/run")
+    async def run_integration_watch(
+        watch_key: str, _: None = Depends(require_integration_token)
+    ) -> Dict[str, Any]:
+        try:
+            hanggent_integration.validate_key(watch_key)
+            started = hanggent_integration.run(watch_key)
+            return {"ok": True, "started": started}
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail=f"Failed to wake monitor: {exc}") from exc
+
+    @app.get("/api/integration/watches/{watch_key}/results")
+    def get_integration_results(
+        watch_key: str,
+        limit: int = 100,
+        _: None = Depends(require_integration_token),
+    ) -> Dict[str, Any]:
+        try:
+            hanggent_integration.validate_key(watch_key)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        capped_limit = max(1, min(limit, 500))
+        rows = hanggent_integration.results(watch_key, capped_limit)
+        return {"results": rows[:capped_limit]}
 
     @app.get("/api/config/files")
-    async def list_config_files(_: str = Depends(require_session)) -> Dict[str, Any]:
+    async def list_config_files(_: str = Depends(require_config_admin)) -> Dict[str, Any]:
         return {"files": [f.__dict__ for f in config_service.list_files()]}
 
     @app.get("/api/config/file/{file_id}")
-    async def get_config_file(file_id: str, _: str = Depends(require_session)) -> Dict[str, Any]:
+    async def get_config_file(
+        file_id: str, _: str = Depends(require_config_admin)
+    ) -> Dict[str, Any]:
         try:
             content, mtime = config_service.read(file_id)
         except KeyError as e:
@@ -309,7 +471,7 @@ def create_app(
     async def put_config_file(
         file_id: str,
         body: Dict[str, Any],
-        _: str = Depends(require_session),
+        _: str = Depends(require_config_admin),
         __: None = Depends(require_csrf),
     ) -> Dict[str, Any]:
         content = body.get("content")
@@ -333,7 +495,7 @@ def create_app(
     @app.post("/api/config/validate")
     async def validate_config(
         body: Dict[str, Any],
-        _: str = Depends(require_session),
+        _: str = Depends(require_config_admin),
         __: None = Depends(require_csrf),
     ) -> Dict[str, Any]:
         content = body.get("content")
@@ -462,10 +624,20 @@ def create_app(
     # ------------------------------------------------------------------
     if STATIC_DIR.exists():
         app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+        static_version = hashlib.sha256(
+            (STATIC_DIR / "app.js").read_bytes() + (STATIC_DIR / "app.css").read_bytes()
+        ).hexdigest()[:12]
 
         @app.get("/")
-        async def index() -> FileResponse:
-            return FileResponse(STATIC_DIR / "index.html")
+        async def index() -> Response:
+            html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+            return Response(
+                html.replace("__AIMM_PUBLIC_BASE__", base_path).replace(
+                    "__AIMM_STATIC_VERSION__", static_version
+                ),
+                media_type="text/html",
+                headers={"Cache-Control": "no-store"},
+            )
 
     # Sync def (not async): FastAPI runs it in a threadpool and Starlette
     # iterates the sync generator there too, so the blocking cache scan never
