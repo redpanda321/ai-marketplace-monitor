@@ -1,5 +1,4 @@
 import datetime
-import json
 import os
 import re
 import time
@@ -15,6 +14,7 @@ from currency_converter import CurrencyConverter  # type: ignore
 from playwright.sync_api import Browser, ElementHandle, Page  # type: ignore
 from rich.pretty import pretty_repr
 
+from .facebook_session import MARKETPLACE_URL, verify_facebook_session
 from .listing import Listing
 from .marketplace import ItemConfig, Marketplace, MarketplaceConfig, WebPage
 from .utils import (
@@ -310,7 +310,14 @@ class FacebookMarketplace(Marketplace):
     def login(self: "FacebookMarketplace") -> None:
         assert self.browser is not None
 
-        self.page = self.create_page(swap_proxy=True)
+        session_file = os.environ.get("AIMM_FACEBOOK_SESSION_FILE") or None
+        self.page = self.create_page(swap_proxy=True, storage_state=session_file)
+        if session_file:
+            self.page.goto(MARKETPLACE_URL, wait_until="domcontentloaded", timeout=30000)
+            if verify_facebook_session(self.page) is None:
+                return
+            if not self.config.username or not self.config.password:
+                raise PermissionError("Marketplace saved session requires login")
 
         # Navigate to the URL, no timeout
         self.goto_url(self.initial_url)
@@ -519,22 +526,7 @@ class FacebookMarketplace(Marketplace):
 
                 strict = getattr(self, "require_verified_session", False)
                 if strict:
-                    account_selectors = ', '.join(
-                        f'[role="button"][aria-label={json.dumps(self.translator(label))}]:visible'
-                        for label in ('Your profile', 'Account')
-                    )
-                    cookies = self.page.context.cookies("https://www.facebook.com")
-                    if (
-                        any(
-                            part in self.page.url for part in ("/login", "/checkpoint", "/recover")
-                        )
-                        or self.page.locator('input[name="email"], input[name="pass"]').count()
-                        or not any(
-                            cookie["name"] == "c_user" and cookie["value"] for cookie in cookies
-                        )
-                        or not self.page.locator('[role="navigation"]').count()
-                        or not self.page.locator(account_selectors).count()
-                    ):
+                    if verify_facebook_session(self.page) is not None:
                         raise PermissionError("Marketplace session is not verified")
                 result_page = FacebookSearchResultPage(self.page, self.translator, self.logger)
                 result_page.strict_receipt = strict
@@ -762,10 +754,13 @@ class FacebookSearchResultPage(WebPage):
         # if no result is found
         btn = self.page.locator(f"""span:has-text('{self.translator("Browse Marketplace")}')""")
         if btn.count() > 0:
-            if getattr(self, 'strict_receipt', False) and not self.page.get_by_text(
-                re.compile(re.escape(self.translator('No results found')), re.IGNORECASE)
-            ).count():
-                raise ValueError('Source empty-result marker was not verified')
+            if (
+                getattr(self, "strict_receipt", False)
+                and not self.page.get_by_text(
+                    re.compile(re.escape(self.translator("No results found")), re.IGNORECASE)
+                ).count()
+            ):
+                raise ValueError("Source empty-result marker was not verified")
             if self.logger:
                 msg = self._parent_with_cond(
                     btn.first,

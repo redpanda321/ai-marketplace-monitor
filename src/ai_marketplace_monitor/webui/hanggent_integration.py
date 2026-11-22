@@ -14,7 +14,9 @@ from typing import Any
 
 from diskcache import Cache
 
+from ..facebook_session import FacebookSessionStore
 from ..utils import amm_home
+from .account_sessions import AccountSessions
 from .config_api import scan_sections
 from .found_export import iter_found_rows
 from .run_receipts import RunReceipts
@@ -35,18 +37,64 @@ class HanggentWatch:
 class HanggentIntegrationService:
     """Manage an isolated AIMM home, config, cache and process per user."""
 
-    def __init__(self, root: Path | None = None) -> None:
+    def __init__(self, root: Path | None = None, start_worker: bool = True) -> None:
         default_root = Path(os.environ.get("AIMM_TENANT_ROOT", str(amm_home / "users")))
         self._root = (root or default_root).resolve()
         self._root.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
         self._queues: dict[int, list[str]] = {}
         self._workers: dict[int, threading.Thread] = {}
-        self.receipts = RunReceipts(self._root)
+        self.receipts = RunReceipts(self._root, start_worker=start_worker)
+        self.accounts = AccountSessions(self._root, self._read)
+
+    def connect_account(self, user_id: int, settings: dict[str, Any]) -> dict:
+        if user_id < 1:
+            raise ValueError("Invalid Hanggent user")
+        username, password = settings.get("facebook_username"), settings.get("facebook_password")
+        if bool(username) != bool(password):
+            raise ValueError(
+                "Provide both Facebook username and password, or use interactive login"
+            )
+        import tomlkit
+
+        with self._lock, self.receipts.account_update(user_id, cancel_pending=bool(username)):
+            document = tomlkit.parse(self._read(user_id))
+            facebook = document.setdefault("marketplace", {}).setdefault("facebook", {})
+            facebook["search_city"] = (
+                settings.get("search_city") or facebook.get("search_city") or "vancouver"
+            )
+            facebook.setdefault("notify", "hanggent")
+            document.setdefault("user", {}).setdefault("hanggent", {}).setdefault(
+                "notify_with", []
+            )
+            if username:
+                self.accounts.close(user_id)
+                facebook["username"], facebook["password"] = username, password
+                FacebookSessionStore(self._user_home(user_id)).clear()
+            self._write(user_id, tomlkit.dumps(document))
+        return self.accounts.status(user_id)
+
+    def disconnect_account(self, user_id: int) -> dict:
+        import tomlkit
+
+        with self._lock, self.receipts.account_update(user_id, cancel_pending=True):
+            self.accounts.close(user_id)
+            document = tomlkit.parse(self._read(user_id))
+            facebook = document.get("marketplace", {}).get("facebook", {})
+            facebook.pop("username", None)
+            facebook.pop("password", None)
+            FacebookSessionStore(self._user_home(user_id)).clear()
+            self._write(user_id, tomlkit.dumps(document))
+        return self.accounts.status(user_id)
+
+    def begin_account_login(self, user_id: int) -> dict:
+        self.connect_account(user_id, {})
+        return self.accounts.begin(user_id)
 
     def enqueue_run(self, watch_key: str, run_id: int) -> dict:
         user_id = self.user_id_for_key(watch_key)
-        return self.receipts.enqueue(watch_key, run_id, self._read(user_id))
+        with self._lock:
+            return self.receipts.enqueue(watch_key, run_id, self._read(user_id))
 
     def run_status(self, watch_key: str, run_id: int, results: bool = False) -> dict:
         self.validate_key(watch_key)
@@ -70,7 +118,9 @@ class HanggentIntegrationService:
         password = str(settings.get("facebook_password") or "")
         if not username or not password:
             raise ValueError("Facebook username and password are required")
-        with self._lock:
+        with self._lock, self.receipts.account_update(user_id, cancel_pending=True):
+            self.accounts.close(user_id)
+            FacebookSessionStore(self._user_home(user_id)).clear()
             existing = self._read(user_id)
             item_blocks = self._item_blocks(existing)
             content = self._settings_toml(settings)

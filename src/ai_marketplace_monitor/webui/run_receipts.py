@@ -18,6 +18,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any, Iterator
 
+from ..facebook_session import FacebookSessionStore
+
 try:
     import tomllib
 except ModuleNotFoundError:  # Python 3.10
@@ -44,6 +46,8 @@ class RunReceipts:
             db.execute(
                 "CREATE TABLE IF NOT EXISTS jobs (watch TEXT, run INTEGER, user INTEGER, status TEXT, deadline REAL, config TEXT, receipt TEXT, results TEXT, PRIMARY KEY(watch, run))"
             )
+            if "session_state" not in {row[1] for row in db.execute("PRAGMA table_info(jobs)")}:
+                db.execute("ALTER TABLE jobs ADD COLUMN session_state TEXT")
         self.path.chmod(0o600)
         self.thread = threading.Thread(target=self.work, daemon=True, name="aimm-receipts")
         if start_worker:
@@ -64,7 +68,10 @@ class RunReceipts:
             raise ValueError("A positive run_id is required")
         identity = {"user_id": user_id, "watch_id": watch_id, "run_id": run_id}
         credentials = tomllib.loads(config).get("marketplace", {}).get("facebook", {})
-        missing = not credentials.get("username") or not credentials.get("password")
+        state = FacebookSessionStore(self.root / f"u{user_id}").snapshot(config)
+        missing = not state and (
+            not credentials.get("username") or not credentials.get("password")
+        )
         receipt = dict(
             schema_version=1,
             **identity,
@@ -77,7 +84,7 @@ class RunReceipts:
             receipt["completed_at"] = now()
         with self.connect() as db:
             db.execute(
-                "INSERT OR IGNORE INTO jobs VALUES (?,?,?,?,NULL,?,?,NULL)",
+                "INSERT OR IGNORE INTO jobs (watch,run,user,status,deadline,config,receipt,results,session_state) VALUES (?,?,?,?,NULL,?,?,NULL,?)",
                 (
                     key,
                     run_id,
@@ -85,9 +92,36 @@ class RunReceipts:
                     receipt["status"],
                     "" if missing else config,
                     json.dumps(receipt),
+                    state,
                 ),
             )
         return self.read(key, run_id)
+
+    @contextmanager
+    def account_update(self, user_id: int, cancel_pending: bool = False) -> Iterator[None]:
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            if db.execute(
+                "SELECT 1 FROM jobs WHERE user=? AND status='running'", (user_id,)
+            ).fetchone():
+                raise ValueError("marketplace_scan_in_progress")
+            yield
+            if cancel_pending:
+                for watch, run_id, raw in db.execute(
+                    "SELECT watch,run,receipt FROM jobs WHERE user=? AND status='queued'",
+                    (user_id,),
+                ).fetchall():
+                    receipt = json.loads(raw)
+                    receipt.update(
+                        status="paused_needs_attention",
+                        error_code="marketplace_account_changed",
+                        session_valid=False,
+                        completed_at=now(),
+                    )
+                    db.execute(
+                        "UPDATE jobs SET status='paused_needs_attention',config='',session_state=NULL,receipt=? WHERE watch=? AND run=?",
+                        (json.dumps(receipt), watch, run_id),
+                    )
 
     def read(self, key: str, run_id: int, results: bool = False) -> dict[str, Any]:
         with self.connect() as db:
@@ -113,7 +147,7 @@ class RunReceipts:
                     status="failed", error_code="source_worker_interrupted", completed_at=now()
                 )
                 db.execute(
-                    "UPDATE jobs SET status='failed', receipt=?, config='' WHERE watch=? AND run=?",
+                    "UPDATE jobs SET status='failed', receipt=?, config='', session_state=NULL WHERE watch=? AND run=?",
                     (json.dumps(receipt), key, run_id),
                 )
             row = db.execute(
@@ -158,6 +192,14 @@ class RunReceipts:
                 snapshot.write_text(config, encoding="utf-8")
                 snapshot.chmod(0o600)
                 output = folder / "output.json"
+                with self.connect() as db:
+                    state = db.execute(
+                        "SELECT session_state FROM jobs WHERE watch=? AND run=?", (key, run_id)
+                    ).fetchone()[0]
+                session_file = folder / "session.json"
+                if state:
+                    session_file.write_text(state, encoding="utf-8")
+                    session_file.chmod(0o600)
                 process = subprocess.Popen(
                     [
                         sys.executable,
@@ -167,7 +209,11 @@ class RunReceipts:
                         str(snapshot),
                         str(output),
                     ],
-                    env={**os.environ, "AIMM_HOME": str(home)},
+                    env={
+                        **os.environ,
+                        "AIMM_HOME": str(home),
+                        "AIMM_FACEBOOK_SESSION_FILE": str(session_file) if state else "",
+                    },
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                     start_new_session=os.name != "nt",
@@ -200,6 +246,8 @@ class RunReceipts:
                                 results_digest=digest(identity, rows),
                             )
                     elif code == 2:
+                        if state:
+                            FacebookSessionStore(home).invalidate_snapshot(state, config)
                         receipt.update(
                             status="paused_needs_attention",
                             error_code="marketplace_session_unverified",
@@ -209,7 +257,7 @@ class RunReceipts:
         receipt["completed_at"] = now()
         with self.connect() as db:
             db.execute(
-                "UPDATE jobs SET status=?,receipt=?,results=?,config='' WHERE watch=? AND run=? AND status='running'",
+                "UPDATE jobs SET status=?,receipt=?,results=?,config='',session_state=NULL WHERE watch=? AND run=? AND status='running'",
                 (
                     receipt["status"],
                     json.dumps(receipt),
