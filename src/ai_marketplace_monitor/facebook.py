@@ -762,6 +762,10 @@ class FacebookSearchResultPage(WebPage):
         # if no result is found
         btn = self.page.locator(f"""span:has-text('{self.translator("Browse Marketplace")}')""")
         if btn.count() > 0:
+            if getattr(self, 'strict_receipt', False) and not self.page.get_by_text(
+                re.compile(re.escape(self.translator('No results found')), re.IGNORECASE)
+            ).count():
+                raise ValueError('Source empty-result marker was not verified')
             if self.logger:
                 msg = self._parent_with_cond(
                     btn.first,
