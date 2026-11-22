@@ -1,4 +1,5 @@
 import datetime
+import json
 import os
 import re
 import time
@@ -518,6 +519,10 @@ class FacebookMarketplace(Marketplace):
 
                 strict = getattr(self, "require_verified_session", False)
                 if strict:
+                    account_selectors = ', '.join(
+                        f'[role="button"][aria-label={json.dumps(self.translator(label))}]:visible'
+                        for label in ('Your profile', 'Account')
+                    )
                     cookies = self.page.context.cookies("https://www.facebook.com")
                     if (
                         any(
@@ -528,6 +533,7 @@ class FacebookMarketplace(Marketplace):
                             cookie["name"] == "c_user" and cookie["value"] for cookie in cookies
                         )
                         or not self.page.locator('[role="navigation"]').count()
+                        or not self.page.locator(account_selectors).count()
                     ):
                         raise PermissionError("Marketplace session is not verified")
                 result_page = FacebookSearchResultPage(self.page, self.translator, self.logger)
