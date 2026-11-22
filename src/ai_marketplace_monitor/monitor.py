@@ -276,9 +276,7 @@ class MarketplaceMonitor:
             )
             for user in users_to_notify:
                 notification_user = User(self.config.user[user], logger=self.logger)
-                notification_user.notify(
-                    new_listings, listing_ratings, item_config
-                )
+                notification_user.notify(new_listings, listing_ratings, item_config)
                 # Hanggent consumes matches through the private results API and
                 # intentionally configures no AIMM notification transport.
                 # Persist those accepted listings so the per-user API can
@@ -611,7 +609,9 @@ class MarketplaceMonitor:
                 self.handle_pause()
                 schedule.run_pending()
 
-    def run_item_once(self: "MarketplaceMonitor", item_name: str) -> None:
+    def run_item_once(
+        self: "MarketplaceMonitor", item_name: str, collect_only: bool = False
+    ) -> list[dict] | None:
         """Run one configured item and exit.
 
         Hanggent uses this bounded entry point for tenant-isolated scans.  Each
@@ -628,7 +628,8 @@ class MarketplaceMonitor:
         if item_config.enabled is False:
             raise ValueError(f"Item {item_name} is disabled")
         self.browser = self._launch_browser()
-        self.load_ai_agents()
+        if not collect_only:
+            self.load_ai_agents()
         for marketplace_config in self.config.marketplace.values():
             if marketplace_config.enabled is False:
                 continue
@@ -646,6 +647,32 @@ class MarketplaceMonitor:
                 marketplace_config,
                 translator=self._select_translator(marketplace_config.language),
             )
+            if collect_only:
+                from dataclasses import asdict
+
+                marketplace.require_verified_session = True
+                rows = []
+                for listing in marketplace.search(item_config):
+                    if len(rows) >= 500:
+                        raise ValueError("Source result limit exceeded")
+                    regions = item_config.search_region
+                    region = (
+                        regions[0]
+                        if isinstance(regions, list) and len(set(regions)) == 1
+                        else regions
+                    )
+                    if region not in ("can", "usa"):
+                        raise ValueError("Run currency requires one verified region")
+                    rows.append(
+                        {
+                            **asdict(listing),
+                            "url": listing.post_url,
+                            "currency": "CAD" if region == "can" else "USD",
+                        }
+                    )
+                if not getattr(marketplace, "session_verified", False):
+                    raise PermissionError("Marketplace session was not verified")
+                return rows
             self.search_item(marketplace_config, marketplace, item_config)
             return
         raise ValueError(f"No enabled marketplace is available for item {item_name}")
