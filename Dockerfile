@@ -44,6 +44,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 #   - websockify + novnc: browser-based VNC client
 #   - supervisor: process manager
 #   - ca-certificates, curl, git: misc tooling
+#   - libatomic1: required by the Node runtime bundled with Playwright
 #   - fonts and libs needed by Chromium are installed by `playwright install --with-deps`
 RUN apt-get update && apt-get install -y --no-install-recommends \
         xvfb \
@@ -53,6 +54,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         websockify \
         novnc \
         ca-certificates \
+        libatomic1 \
         curl \
         git \
         tini \
