@@ -23,10 +23,11 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Annotated, Any, Dict, List
 
 import uvicorn
 from fastapi import (
+    Body,
     Cookie,
     Depends,
     FastAPI,
@@ -408,16 +409,33 @@ def create_app(
 
     @app.post("/api/integration/watches/{watch_key}/run")
     async def run_integration_watch(
-        watch_key: str, _: None = Depends(require_integration_token)
+        watch_key: str,
+        payload: Annotated[Dict[str, Any] | None, Body()] = None,
+        _: None = Depends(require_integration_token),
     ) -> Dict[str, Any]:
         try:
             hanggent_integration.validate_key(watch_key)
+            if payload is not None and "run_id" in payload:
+                receipt = hanggent_integration.enqueue_run(watch_key, payload["run_id"])
+                return {"ok": True, "started": receipt["status"] == "running", **receipt}
             started = hanggent_integration.run(watch_key)
             return {"ok": True, "started": started}
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except OSError as exc:
             raise HTTPException(status_code=500, detail=f"Failed to wake monitor: {exc}") from exc
+
+    @app.get("/api/integration/watches/{watch_key}/runs/{run_id}")
+    @app.get("/api/integration/watches/{watch_key}/runs/{run_id}/results")
+    def get_integration_run(
+        watch_key: str, run_id: int, request: Request, _: None = Depends(require_integration_token)
+    ) -> Dict[str, Any]:
+        try:
+            return hanggent_integration.run_status(
+                watch_key, run_id, request.url.path.endswith("/results")
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     @app.get("/api/integration/watches/{watch_key}/results")
     def get_integration_results(

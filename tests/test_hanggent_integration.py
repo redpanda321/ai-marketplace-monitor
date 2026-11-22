@@ -101,6 +101,19 @@ def test_internal_api_requires_shared_token(
     )
     assert response.status_code == 200
     assert response.json()["watch_key"] == "hanggent_u7_w12"
+    path = "/api/integration/watches/hanggent_u7_w12"
+    assert client.post(path + "/run", json={"run_id": 19}).status_code == 401
+    headers = {"Authorization": "Bearer shared-secret"}
+    blocked = client.post(path + "/run", json={"run_id": 19}, headers=headers)
+    assert blocked.json()["error_code"] == "marketplace_credentials_missing"
+    status = client.get(path + "/runs/19", headers=headers)
+    assert status.json()["run_id"] == 19
+    assert status.json()["status"] == "paused_needs_attention"
+    assert client.get(path + "/runs/19/results", headers=headers).json()["session_valid"] is False
+    assert (
+        client.get("/api/integration/watches/hanggent_u8_w12/runs/19", headers=headers).status_code
+        == 404
+    )
 
     settings = client.put(
         "/api/integration/users/7/settings",

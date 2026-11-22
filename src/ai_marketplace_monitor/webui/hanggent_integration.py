@@ -17,6 +17,7 @@ from diskcache import Cache
 from ..utils import amm_home
 from .config_api import scan_sections
 from .found_export import iter_found_rows
+from .run_receipts import RunReceipts
 
 WATCH_KEY_RE = re.compile(r"^hanggent_u([1-9][0-9]*)_w[1-9][0-9]*$")
 
@@ -41,6 +42,15 @@ class HanggentIntegrationService:
         self._lock = threading.Lock()
         self._queues: dict[int, list[str]] = {}
         self._workers: dict[int, threading.Thread] = {}
+        self.receipts = RunReceipts(self._root)
+
+    def enqueue_run(self, watch_key: str, run_id: int) -> dict:
+        user_id = self.user_id_for_key(watch_key)
+        return self.receipts.enqueue(watch_key, run_id, self._read(user_id))
+
+    def run_status(self, watch_key: str, run_id: int, results: bool = False) -> dict:
+        self.validate_key(watch_key)
+        return self.receipts.read(watch_key, run_id, results)
 
     @staticmethod
     def user_id_for_key(watch_key: str) -> int:
@@ -181,7 +191,9 @@ class HanggentIntegrationService:
             content = self._read(user_id)
             lines = content.splitlines(keepends=True)
             target = f"item.{watch_key}"
-            section = next((value for value in scan_sections(content) if value.name == target), None)
+            section = next(
+                (value for value in scan_sections(content) if value.name == target), None
+            )
             if section is not None:
                 del lines[section.line_start : section.line_end]
             updated = "".join(lines).rstrip()
@@ -211,7 +223,9 @@ class HanggentIntegrationService:
         ]
         notification_email = str(settings.get("notification_email") or "").strip()
         if notification_email:
-            rows.insert(rows.index("notify_with = []"), f"email = {json.dumps(notification_email)}")
+            rows.insert(
+                rows.index("notify_with = []"), f"email = {json.dumps(notification_email)}"
+            )
         provider = str(settings.get("ai_provider") or "").strip().lower()
         api_key = str(settings.get("ai_api_key") or "")
         if provider and api_key:
