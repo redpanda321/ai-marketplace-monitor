@@ -212,6 +212,8 @@ class RunReceipts:
                     env={
                         **os.environ,
                         "AIMM_HOME": str(home),
+                        "FACEBOOK_USERNAME": "",
+                        "FACEBOOK_PASSWORD": "",
                         "AIMM_FACEBOOK_SESSION_FILE": str(session_file) if state else "",
                     },
                     stdout=subprocess.DEVNULL,
