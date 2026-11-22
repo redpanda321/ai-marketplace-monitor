@@ -57,9 +57,13 @@ def test_exit_alone_cannot_complete_a_run(
 ) -> None:
     runs = store(tmp_path)
     runs.enqueue("hanggent_u7_w12", 19, CONFIG)
+    monkeypatch.setenv("FACEBOOK_USERNAME", "unrelated-global-account")
+    monkeypatch.setenv("FACEBOOK_PASSWORD", "unrelated-global-password")
 
     def process(args: list[str], **kwargs: Any) -> Any:
         assert "AIMM_HOME" in kwargs["env"]
+        assert not kwargs["env"].get("FACEBOOK_USERNAME")
+        assert not kwargs["env"].get("FACEBOOK_PASSWORD")
         assert "private-password" in Path(args[-2]).read_text(encoding="utf-8")
         if output is not None:
             Path(args[-1]).write_text(json.dumps(output), encoding="utf-8")

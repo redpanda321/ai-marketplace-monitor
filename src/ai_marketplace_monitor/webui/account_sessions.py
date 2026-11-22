@@ -42,11 +42,14 @@ def login_request_allowed(url: str) -> bool:
 
 
 class AccountBrowser:
-    def __init__(self, user_id: int, home: Path, read_config: Callable[[], str]) -> None:
+    def __init__(
+        self, user_id: int, home: Path, read_config: Callable[[], str], control_lock: Any
+    ) -> None:
         self.user_id = user_id
         self.id = uuid4().hex
         self.store = FacebookSessionStore(home)
         self.read_config = read_config
+        self.control_lock = control_lock
         self.config = read_config()
         self.commands = queue.Queue(maxsize=8)
         self.closed = threading.Event()
@@ -151,13 +154,14 @@ class AccountBrowser:
                             if error:
                                 future.set_result(self.inspect(page))
                                 continue
-                            if self.closed.is_set() or account_fingerprint(
-                                self.config
-                            ) != account_fingerprint(self.read_config()):
-                                raise ValueError("marketplace_account_changed")
-                            self.store.save_verified(context.storage_state(), self.config)
-                            self.state = "verified"
-                            self.closed.set()
+                            with self.control_lock:
+                                if self.closed.is_set() or account_fingerprint(
+                                    self.config
+                                ) != account_fingerprint(self.read_config()):
+                                    raise ValueError("marketplace_account_changed")
+                                self.store.save_verified(context.storage_state(), self.config)
+                                self.state = "verified"
+                                self.closed.set()
                             future.set_result(
                                 {
                                     "user_id": self.user_id,
@@ -253,7 +257,10 @@ class AccountSessions:
                 if sum(not item.closed.is_set() for item in self.sessions.values()) >= 2:
                     raise ValueError("marketplace_login_capacity_busy")
                 current = AccountBrowser(
-                    user_id, self.root / f"u{user_id}", lambda: self.read_config(user_id)
+                    user_id,
+                    self.root / f"u{user_id}",
+                    lambda: self.read_config(user_id),
+                    self.lock,
                 )
                 self.sessions[user_id] = current
             return current.public()
@@ -268,5 +275,5 @@ class AccountSessions:
     def close(self, user_id: int) -> None:
         with self.lock:
             session = self.sessions.pop(user_id, None)
-        if session:
-            session.closed.set()
+            if session:
+                session.closed.set()
