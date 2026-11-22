@@ -501,7 +501,9 @@ class Marketplace(Generic[TMarketplaceConfig, TItemConfig]):
             self.browser = None
             self.page = None
 
-    def create_page(self: "Marketplace", swap_proxy: bool = False) -> Page:
+    def create_page(
+        self: "Marketplace", swap_proxy: bool = False, storage_state: str | None = None
+    ) -> Page:
         assert self.browser is not None
 
         # if there is an existing page, asked to swap_proxy, and there is an proxy_server
@@ -518,11 +520,12 @@ class Marketplace(Generic[TMarketplaceConfig, TItemConfig]):
 
         if self.page is None:
             context = self.browser.new_context(
+                storage_state=storage_state,
                 proxy=(
                     None
                     if self.config.monitor_config is None
                     else self.config.monitor_config.get_proxy_options()
-                )
+                ),
             )
             self.page = context.new_page()
         return self.page

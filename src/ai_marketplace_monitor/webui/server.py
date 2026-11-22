@@ -23,7 +23,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Annotated, Any, Dict, List
+from typing import Annotated, Any, Callable, Dict, List
 
 import uvicorn
 from fastapi import (
@@ -351,6 +351,78 @@ def create_app(
         if can_manage_config:
             result["config_files"] = [f.__dict__ for f in config_service.list_files()]
         return result
+
+    def account_operation(user_id: int, operation: Callable[[], Dict[str, Any]]) -> Dict[str, Any]:
+        if user_id < 1:
+            raise HTTPException(status_code=400, detail="Invalid Hanggent user")
+        try:
+            return operation()
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail="marketplace_account_unavailable") from exc
+
+    @app.get("/api/integration/users/{user_id}/account")
+    def get_account(user_id: int, _: None = Depends(require_integration_token)) -> Dict[str, Any]:
+        return account_operation(user_id, lambda: hanggent_integration.accounts.status(user_id))
+
+    @app.put("/api/integration/users/{user_id}/account")
+    def connect_account(
+        user_id: int, body: Dict[str, Any], _: None = Depends(require_integration_token)
+    ) -> Dict[str, Any]:
+        return account_operation(
+            user_id, lambda: hanggent_integration.connect_account(user_id, body)
+        )
+
+    @app.delete("/api/integration/users/{user_id}/account")
+    def disconnect_account(
+        user_id: int, _: None = Depends(require_integration_token)
+    ) -> Dict[str, Any]:
+        return account_operation(user_id, lambda: hanggent_integration.disconnect_account(user_id))
+
+    @app.post("/api/integration/users/{user_id}/account/sessions")
+    def begin_account_login(
+        user_id: int, _: None = Depends(require_integration_token)
+    ) -> Dict[str, Any]:
+        return account_operation(
+            user_id, lambda: hanggent_integration.begin_account_login(user_id)
+        )
+
+    @app.get("/api/integration/users/{user_id}/account/sessions/{session_id}")
+    def inspect_account_login(
+        user_id: int, session_id: str, _: None = Depends(require_integration_token)
+    ) -> Dict[str, Any]:
+        return account_operation(
+            user_id,
+            lambda: hanggent_integration.accounts.perform(
+                user_id, session_id, {"action": "inspect"}
+            ),
+        )
+
+    @app.post("/api/integration/users/{user_id}/account/sessions/{session_id}")
+    def act_account_login(
+        user_id: int,
+        session_id: str,
+        body: Dict[str, Any],
+        _: None = Depends(require_integration_token),
+    ) -> Dict[str, Any]:
+        return account_operation(
+            user_id, lambda: hanggent_integration.accounts.perform(user_id, session_id, body)
+        )
+
+    @app.delete("/api/integration/users/{user_id}/account/sessions/{session_id}")
+    def close_account_login(
+        user_id: int, session_id: str, _: None = Depends(require_integration_token)
+    ) -> Dict[str, Any]:
+        def close():
+            # Verify ownership before closing any active browser.
+            active = hanggent_integration.accounts.status(user_id)
+            if active.get("session_id") != session_id:
+                raise ValueError("marketplace_login_session_not_found")
+            hanggent_integration.accounts.close(user_id)
+            return hanggent_integration.accounts.status(user_id)
+
+        return account_operation(user_id, close)
 
     @app.put("/api/integration/watches/{watch_key}")
     async def put_integration_watch(
