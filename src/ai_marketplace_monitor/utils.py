@@ -1,4 +1,5 @@
 import copy
+import errno
 import hashlib
 import json
 import os
@@ -7,7 +8,7 @@ import re
 import time
 from dataclasses import asdict, dataclass, fields
 from enum import Enum
-from logging import Logger
+from logging import Logger, getLogger
 from pathlib import Path
 from typing import Any, Dict, List, Tuple, TypeVar
 
@@ -43,11 +44,14 @@ import rich.pretty
 from PIL import Image
 from watchdog.events import FileSystemEvent, FileSystemEventHandler
 from watchdog.observers import Observer
+from watchdog.observers.polling import PollingObserver
 
 # home directory for all settings and caches
-amm_home = Path(
-    os.environ.get("AIMM_HOME", str(Path.home() / ".ai-marketplace-monitor"))
-).expanduser().resolve()
+amm_home = (
+    Path(os.environ.get("AIMM_HOME", str(Path.home() / ".ai-marketplace-monitor")))
+    .expanduser()
+    .resolve()
+)
 amm_home.mkdir(parents=True, exist_ok=True)
 
 cache = Cache(amm_home)
@@ -539,6 +543,37 @@ class ChangeHandler(FileSystemEventHandler):
             self._mark_if_watched(event.src_path)
 
 
+def _start_config_observer(event_handler: ChangeHandler, directories: List[str]) -> Any:
+    for factory in (Observer, PollingObserver):
+        observer = None
+        try:
+            observer = factory()
+            for directory in directories:
+                observer.schedule(event_handler, directory, recursive=False)
+            observer.start()
+            return observer
+        except Exception as exc:
+            if observer is not None:
+                observer.stop()
+                if observer.is_alive():
+                    observer.join()
+            if (
+                factory is Observer
+                and isinstance(exc, OSError)
+                and exc.errno
+                in {
+                    errno.EMFILE,
+                    errno.ENFILE,
+                    errno.ENOSPC,
+                }
+            ):
+                getLogger(__name__).warning(
+                    "Filesystem watcher quota exhausted; polling configuration changes."
+                )
+                continue
+            raise
+
+
 def doze(
     duration: int, files: List[Path] | None = None, keyboard_monitor: KeyboardMonitor | None = None
 ) -> SleepStatus:
@@ -550,18 +585,13 @@ def doze(
         2: if doze was disrupted by file change
     """
     event_handler = ChangeHandler([str(x) for x in (files or [])])
-    observers = []
-    if keyboard_monitor:
-        keyboard_monitor.start_sleeping()
-
     for filename in files or []:
         if not filename.exists():
             raise FileNotFoundError(f"File not found: {filename}")
-        observer = Observer()
-        # we can only monitor a directory
-        observer.schedule(event_handler, str(filename.parent), recursive=False)
-        observer.start()
-        observers.append(observer)
+    directories = sorted({str(filename.parent) for filename in files or []})
+    observer = _start_config_observer(event_handler, directories) if directories else None
+    if keyboard_monitor:
+        keyboard_monitor.start_sleeping()
 
     start_time = time.time()
     try:
@@ -573,7 +603,7 @@ def doze(
                 return SleepStatus.BY_KEYBOARD
         return SleepStatus.NOT_DISRUPTED
     finally:
-        for observer in observers:
+        if observer is not None:
             observer.stop()
             observer.join()
 
