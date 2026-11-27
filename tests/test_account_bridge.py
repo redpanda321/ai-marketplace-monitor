@@ -3,6 +3,7 @@
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -11,10 +12,14 @@ import pytest
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.testclient import TestClient
 
+from ai_marketplace_monitor.config import Config
 from ai_marketplace_monitor.facebook_session import FacebookSessionStore
 from ai_marketplace_monitor.webui import account_bridge as bridge
 from ai_marketplace_monitor.webui.account_bridge_api import register_bridge_routes
-from ai_marketplace_monitor.webui.hanggent_integration import HanggentIntegrationService
+from ai_marketplace_monitor.webui.hanggent_integration import (
+    HanggentIntegrationService,
+    HanggentWatch,
+)
 
 
 def cookies() -> list[dict]:
@@ -57,6 +62,185 @@ def wait(service: HanggentIntegrationService) -> None:
 
 def owner_status(service: HanggentIntegrationService, ticket: dict) -> dict:
     return service.bridges.status(ticket["bridge_id"], owner=ticket["user_id"])
+
+
+def queued_snapshot(service: HanggentIntegrationService) -> list[tuple]:
+    with service.receipts.connect() as db:
+        return db.execute("SELECT * FROM jobs ORDER BY watch,run").fetchall()
+
+
+def test_first_import_initializes_worker_config_without_credentials(
+    service: HanggentIntegrationService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert not service._config_path(8).exists()
+    monkeypatch.setattr(bridge, "live_verify", lambda state, identity: (state, None))
+    ticket = service.bridges.begin(8)
+    upload(service, ticket)
+    wait(service)
+    assert owner_status(service, ticket)["session_valid"] is True
+    service.upsert("hanggent_u8_w6", HanggentWatch(["Tesla Model Y"], "can"))
+    parsed = Config([service._config_path(8)])
+    assert parsed.marketplace["facebook"].search_city == ["vancouver"]
+    assert not parsed.marketplace["facebook"].username
+    assert not parsed.marketplace["facebook"].password
+    assert parsed.user["hanggent"].notify_with == []
+    assert parsed.item["hanggent_u8_w6"].search_phrases == ["Tesla Model Y"]
+    assert service.enqueue_run("hanggent_u8_w6", 1)["status"] == "queued"
+    with service.receipts.connect() as db:
+        config, snapshot = db.execute(
+            "SELECT config,session_state FROM jobs WHERE watch='hanggent_u8_w6' AND run=1"
+        ).fetchone()
+    assert config == service._read(8)
+    assert snapshot == FacebookSessionStore(service._user_home(8)).snapshot(config)
+
+
+def test_import_preserves_configured_credentials_city_and_watches(
+    service: HanggentIntegrationService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service.connect_account(
+        8,
+        {
+            "facebook_username": "fake-user",
+            "facebook_password": "fake-password",
+            "search_city": "burnaby",
+        },
+    )
+    service.upsert("hanggent_u8_w6", HanggentWatch(["Tesla Model Y"], "can"))
+    original = service._read(8)
+    monkeypatch.setattr(bridge, "live_verify", lambda state, identity: (state, None))
+    ticket = service.bridges.begin(8)
+    upload(service, ticket)
+    wait(service)
+    assert owner_status(service, ticket)["session_valid"] is True
+    assert service._read(8) == original
+    Config([service._config_path(8)])
+    assert service.enqueue_run("hanggent_u8_w6", 1)["status"] == "queued"
+
+
+@pytest.mark.parametrize("mutation", ["cancel", "expiry", "config", "generation"])
+@pytest.mark.parametrize("after_guard", [False, True])
+def test_stale_verifier_preserves_queued_session_snapshots(
+    service: HanggentIntegrationService,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+    after_guard: bool,
+) -> None:
+    service.connect_account(8, {})
+    service.upsert("hanggent_u8_w6", HanggentWatch(["Tesla Model Y"], "can"))
+    store = FacebookSessionStore(service._user_home(8))
+    state, _ = bridge.parse_cookies(cookies())
+    store.save_verified(state, service._read(8))
+    assert service.enqueue_run("hanggent_u8_w6", 1)["status"] == "queued"
+    ticket = service.bridges.begin(8)
+
+    def invalidate() -> None:
+        if mutation == "config":
+            service._write(
+                8,
+                service._read(8).replace(
+                    'notify = "hanggent"', 'notify = "hanggent"\nusername = "changed-fake-user"'
+                ),
+            )
+        else:
+            with service.bridges.connect() as db:
+                if mutation == "cancel":
+                    db.execute(
+                        "UPDATE bridges SET status='cancelled',error_code='cancelled' WHERE id=?",
+                        (ticket["bridge_id"],),
+                    )
+                elif mutation == "expiry":
+                    db.execute(
+                        "UPDATE bridges SET deadline=? WHERE id=?",
+                        (time.time() - 1, ticket["bridge_id"]),
+                    )
+                else:
+                    db.execute("UPDATE generations SET generation=generation+1 WHERE owner=8")
+
+    if after_guard:
+        original_guard = service.receipts.account_update
+
+        @contextmanager
+        def guarded_update(owner: int, cancel_pending: bool = False):
+            with original_guard(owner, cancel_pending):
+                invalidate()
+                yield
+
+        monkeypatch.setattr(service.receipts, "account_update", guarded_update)
+    before = queued_snapshot(service)
+    saved = store.state_path.read_bytes(), store.metadata_path.read_bytes()
+    release = threading.Event()
+
+    def verify(state: dict, identity: str) -> tuple[dict, None]:
+        assert release.wait(5)
+        if not after_guard:
+            invalidate()
+        return state, None
+
+    monkeypatch.setattr(bridge, "live_verify", verify)
+    try:
+        upload(service, ticket)
+    finally:
+        release.set()
+    wait(service)
+    assert queued_snapshot(service) == before
+    assert (store.state_path.read_bytes(), store.metadata_path.read_bytes()) == saved
+    result = owner_status(service, ticket)
+    assert result["status"] == ("expired" if mutation == "expiry" else "cancelled")
+    assert (
+        result["error_code"]
+        == {
+            "expiry": "expired",
+            "cancel": "cancelled",
+            "config": "account_changed",
+            "generation": "account_changed",
+        }[mutation]
+    )
+
+
+def test_old_verifier_cannot_cancel_scans_queued_after_new_import(
+    service: HanggentIntegrationService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    entered, release = threading.Event(), threading.Event()
+
+    def verify(state: dict, identity: str) -> tuple[dict, None]:
+        if identity == "80000001":
+            entered.set()
+            assert release.wait(5)
+        return state, None
+
+    service.connect_account(8, {})
+    service.upsert("hanggent_u8_w6", HanggentWatch(["Tesla Model Y"], "can"))
+    state, _ = bridge.parse_cookies(cookies())
+    store = FacebookSessionStore(service._user_home(8))
+    store.save_verified(state, service._read(8))
+    assert service.enqueue_run("hanggent_u8_w6", 1)["status"] == "queued"
+    monkeypatch.setattr(bridge, "live_verify", verify)
+    old = service.bridges.begin(8)
+    upload(service, old)
+    assert entered.wait(2)
+    try:
+        new = service.bridges.begin(8)
+        payload = cookies()
+        payload[0]["value"] = "80000002"
+        upload(service, new, payload=payload)
+        worker = service.bridges.workers.get(new["bridge_id"])
+        if worker:
+            worker.join(5)
+            assert not worker.is_alive()
+        assert owner_status(service, new)["session_valid"] is True
+        old_receipt = service.run_status("hanggent_u8_w6", 1)
+        assert old_receipt["status"] == "paused_needs_attention"
+        assert old_receipt["error_code"] == "marketplace_account_changed"
+        assert service.enqueue_run("hanggent_u8_w6", 2)["status"] == "queued"
+        before = queued_snapshot(service)
+        saved = store.snapshot(service._read(8))
+    finally:
+        release.set()
+        wait(service)
+    assert owner_status(service, old)["status"] == "cancelled"
+    assert owner_status(service, new)["session_valid"] is True
+    assert queued_snapshot(service) == before
+    assert store.snapshot(service._read(8)) == saved
 
 
 def test_capability_is_hashed_scoped_and_absolute_expiry(

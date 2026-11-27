@@ -32,6 +32,10 @@ class BridgeError(ValueError):
     """Only fixed public codes cross the transport boundary."""
 
 
+class _PublicationAbortedError(Exception):
+    pass
+
+
 def state_digest(state: dict) -> str:
     return hashlib.sha256(json.dumps(state, sort_keys=True).encode()).hexdigest()
 
@@ -196,27 +200,28 @@ class AccountBridges:
             )
 
     def begin(self, owner: int) -> dict:
-        with self.service._lock, self.service.receipts.account_update(owner):
-            self.cancel_owner(owner)
-            self.service.accounts.close(owner)
-            capability, bridge_id = secrets.token_urlsafe(32), str(uuid4())
-            with self.connect() as db:
-                generation = db.execute(
-                    "SELECT generation FROM generations WHERE owner=?", (owner,)
-                ).fetchone()[0]
-                db.execute(
-                    "INSERT INTO bridges (id,owner,capability_hash,deadline,generation,fingerprint,status) VALUES (?,?,?,?,?,?,'pending')",
-                    (
-                        bridge_id,
-                        owner,
-                        hashlib.sha256(capability.encode()).hexdigest(),
-                        time.time() + LIFETIME_SECONDS,
-                        generation,
-                        account_fingerprint(self.service._read(owner)),
-                    ),
-                )
-                row = db.execute("SELECT * FROM bridges WHERE id=?", (bridge_id,)).fetchone()
-            return {**self.public(row), "capability": capability}
+        with self.service._lock:
+            self.service.connect_account(owner, {})
+            with self.service.receipts.account_update(owner):
+                self.service.accounts.close(owner)
+                capability, bridge_id = secrets.token_urlsafe(32), str(uuid4())
+                with self.connect() as db:
+                    generation = db.execute(
+                        "SELECT generation FROM generations WHERE owner=?", (owner,)
+                    ).fetchone()[0]
+                    db.execute(
+                        "INSERT INTO bridges (id,owner,capability_hash,deadline,generation,fingerprint,status) VALUES (?,?,?,?,?,?,'pending')",
+                        (
+                            bridge_id,
+                            owner,
+                            hashlib.sha256(capability.encode()).hexdigest(),
+                            time.time() + LIFETIME_SECONDS,
+                            generation,
+                            account_fingerprint(self.service._read(owner)),
+                        ),
+                    )
+                    row = db.execute("SELECT * FROM bridges WHERE id=?", (bridge_id,)).fetchone()
+                return {**self.public(row), "capability": capability}
 
     def lookup(
         self,
@@ -335,6 +340,17 @@ class AccountBridges:
                 with self.connect() as db:
                     row = self.lookup(db, bridge_id)
                     owner = row["owner"]
+                    if row["status"] != "verifying":
+                        return
+                    generation = db.execute(
+                        "SELECT generation FROM generations WHERE owner=?", (owner,)
+                    ).fetchone()[0]
+                    if generation != row["generation"]:
+                        db.execute(
+                            "UPDATE bridges SET status='cancelled',error_code='account_changed' WHERE id=?",
+                            (bridge_id,),
+                        )
+                        return
                 with self.service.receipts.account_update(owner, cancel_pending=True):
                     with self.connect() as db:
                         db.execute("BEGIN IMMEDIATE")
@@ -343,9 +359,8 @@ class AccountBridges:
                             "SELECT generation FROM generations WHERE owner=?", (owner,)
                         ).fetchone()[0]
                         config = self.service._read(owner)
-                        if row["status"] != "verifying":
-                            return
-                        if (
+                        publish = row["status"] == "verifying"
+                        if publish and (
                             generation != row["generation"]
                             or account_fingerprint(config) != row["fingerprint"]
                         ):
@@ -353,11 +368,14 @@ class AccountBridges:
                                 "UPDATE bridges SET status='cancelled',error_code='account_changed' WHERE id=?",
                                 (bridge_id,),
                             )
-                            return
-                        db.execute(
-                            "UPDATE bridges SET status='saving',state_digest=? WHERE id=?",
-                            (state_digest(verified), bridge_id),
-                        )
+                            publish = False
+                        if publish:
+                            db.execute(
+                                "UPDATE bridges SET status='saving',state_digest=? WHERE id=?",
+                                (state_digest(verified), bridge_id),
+                            )
+                    if not publish:
+                        raise _PublicationAbortedError()
                     store = FacebookSessionStore(self.service._user_home(owner))
                     store.save_verified(verified, config)
                     if store.snapshot(config) is None:
@@ -367,6 +385,8 @@ class AccountBridges:
                             "UPDATE bridges SET status='verified',error_code=NULL WHERE id=? AND status='saving'",
                             (bridge_id,),
                         )
+        except _PublicationAbortedError:
+            pass
         except Exception:
             self.finish_failure(bridge_id, "failed", "save_failed")
         finally:
