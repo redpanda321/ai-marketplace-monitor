@@ -63,6 +63,13 @@ class BrowserFailure:
 def login_request_allowed(url: str) -> bool:
     parsed = urlsplit(url)
     host = parsed.hostname or ""
+    if (
+        parsed.scheme == "https"
+        and host in ("www.google.com", "www.gstatic.com", "recaptcha.google.com")
+        and parsed.netloc.lower() in (host, f"{host}:443")
+        and parsed.path.startswith("/recaptcha/")
+    ):
+        return True
     return parsed.scheme == "https" and any(
         host == domain or host.endswith("." + domain)
         for domain in (
