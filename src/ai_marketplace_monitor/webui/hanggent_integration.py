@@ -17,6 +17,7 @@ from diskcache import Cache
 from ..facebook_session import FacebookSessionStore
 from ..utils import amm_home
 from .account_sessions import AccountSessions
+from .account_bridge import AccountBridges
 from .config_api import scan_sections
 from .found_export import iter_found_rows
 from .run_receipts import RunReceipts
@@ -41,11 +42,17 @@ class HanggentIntegrationService:
         default_root = Path(os.environ.get("AIMM_TENANT_ROOT", str(amm_home / "users")))
         self._root = (root or default_root).resolve()
         self._root.mkdir(parents=True, exist_ok=True)
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._queues: dict[int, list[str]] = {}
         self._workers: dict[int, threading.Thread] = {}
-        self.receipts = RunReceipts(self._root, start_worker=start_worker)
-        self.accounts = AccountSessions(self._root, self._read)
+        self.receipts = RunReceipts(self._root, start_worker=False)
+        self.accounts = AccountSessions(
+            self._root, self._read, control_lock=self._lock,
+            publish_guard=lambda owner: self.receipts.account_update(owner, cancel_pending=True),
+        )
+        self.bridges = AccountBridges(self)
+        if start_worker:
+            self.receipts.thread.start()
 
     def connect_account(self, user_id: int, settings: dict[str, Any]) -> dict:
         if user_id < 1:
@@ -58,6 +65,7 @@ class HanggentIntegrationService:
         import tomlkit
 
         with self._lock, self.receipts.account_update(user_id, cancel_pending=bool(username)):
+            self.bridges.cancel_owner(user_id)
             document = tomlkit.parse(self._read(user_id))
             facebook = document.setdefault("marketplace", {}).setdefault("facebook", {})
             facebook["search_city"] = (
@@ -78,6 +86,7 @@ class HanggentIntegrationService:
         import tomlkit
 
         with self._lock, self.receipts.account_update(user_id, cancel_pending=True):
+            self.bridges.cancel_owner(user_id)
             self.accounts.close(user_id)
             document = tomlkit.parse(self._read(user_id))
             facebook = document.get("marketplace", {}).get("facebook", {})
@@ -88,8 +97,9 @@ class HanggentIntegrationService:
         return self.accounts.status(user_id)
 
     def begin_account_login(self, user_id: int) -> dict:
-        self.connect_account(user_id, {})
-        return self.accounts.begin(user_id)
+        with self._lock:
+            self.connect_account(user_id, {})
+            return self.accounts.begin(user_id)
 
     def enqueue_run(self, watch_key: str, run_id: int) -> dict:
         user_id = self.user_id_for_key(watch_key)
@@ -119,6 +129,7 @@ class HanggentIntegrationService:
         if not username or not password:
             raise ValueError("Facebook username and password are required")
         with self._lock, self.receipts.account_update(user_id, cancel_pending=True):
+            self.bridges.cancel_owner(user_id)
             self.accounts.close(user_id)
             FacebookSessionStore(self._user_home(user_id)).clear()
             existing = self._read(user_id)
