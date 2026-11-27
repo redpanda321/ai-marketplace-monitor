@@ -233,9 +233,11 @@ class AccountBrowser:
                 }
             return {
                 **self.public(),
-                "blocked_reason": "marketplace_browser_unavailable"
-                if self.state == "browser_unavailable"
-                else "marketplace_login_session_expired",
+                "blocked_reason": (
+                    "marketplace_browser_unavailable"
+                    if self.state == "browser_unavailable"
+                    else "marketplace_login_session_expired"
+                ),
             }
         if not self.ready.is_set():
             return self.public()

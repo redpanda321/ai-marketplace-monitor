@@ -39,6 +39,10 @@ jobs:
             src/ai_marketplace_monitor/webui/account_sessions.py \
             tests/test_account_browser_failures.py \
             tests/test_recaptcha_login_requests.py
+          uv run --no-sync black --check \
+            src/ai_marketplace_monitor/webui/account_sessions.py \
+            tests/test_account_browser_failures.py \
+            tests/test_recaptcha_login_requests.py
 
       - name: Install Chromium and system dependencies
         run: uv run --no-sync python -m playwright install --with-deps chromium
