@@ -1,0 +1,72 @@
+name: Hanggent login tests
+
+on:
+  pull_request:
+    branches: [hanggent-integration]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  login-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      PYTHONPATH: src
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5.6.0
+        with:
+          python-version: "3.12"
+
+      - name: Install locked test environment
+        run: |
+          python -m pip install uv==0.9.4
+          uv sync --locked --python 3.12 --extra test --extra linters --group test
+
+      - name: Check changed login files without modifying them
+        run: |
+          uv run --no-sync ruff check --no-fix \
+            src/ai_marketplace_monitor/webui/account_sessions.py \
+            tests/test_account_browser_failures.py \
+            tests/test_recaptcha_login_requests.py
+          uv run --no-sync ruff format --check \
+            src/ai_marketplace_monitor/webui/account_sessions.py \
+            tests/test_account_browser_failures.py \
+            tests/test_recaptcha_login_requests.py
+
+      - name: Install Chromium and system dependencies
+        run: uv run --no-sync python -m playwright install --with-deps chromium
+
+      - name: Test login using controlled HTML and fake sessions
+        run: |
+          uv run --no-sync python -m pytest -q \
+            tests/test_manual_account_login.py \
+            tests/test_account_browser_failures.py \
+            tests/test_facebook_sessions.py \
+            tests/test_hanggent_integration.py \
+            tests/test_recaptcha_login_requests.py
+
+      - name: Build wheel and verify packaged login source
+        run: |
+          uv build --wheel --out-dir "$RUNNER_TEMP/login-wheel"
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          from zipfile import ZipFile
+
+          wheel, = Path(os.environ["RUNNER_TEMP"], "login-wheel").glob("*.whl")
+          with ZipFile(wheel) as archive:
+              for relative in (
+                  "ai_marketplace_monitor/webui/account_sessions.py",
+                  "ai_marketplace_monitor/facebook_session.py",
+                  "ai_marketplace_monitor/webui/hanggent_integration.py",
+              ):
+                  assert archive.read(relative) == Path("src", relative).read_bytes(), relative
+          print(f"Verified login source in {wheel.name}")
+          PY
