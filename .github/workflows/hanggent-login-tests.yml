@@ -33,14 +33,23 @@ jobs:
         run: |
           uv run --no-sync ruff check --no-fix \
             src/ai_marketplace_monitor/webui/account_sessions.py \
+            src/ai_marketplace_monitor/webui/account_bridge.py \
+            src/ai_marketplace_monitor/webui/account_bridge_api.py \
+            tests/test_account_bridge.py \
             tests/test_account_browser_failures.py \
             tests/test_recaptcha_login_requests.py
           uv run --no-sync ruff format --check \
             src/ai_marketplace_monitor/webui/account_sessions.py \
+            src/ai_marketplace_monitor/webui/account_bridge.py \
+            src/ai_marketplace_monitor/webui/account_bridge_api.py \
+            tests/test_account_bridge.py \
             tests/test_account_browser_failures.py \
             tests/test_recaptcha_login_requests.py
           uv run --no-sync black --check \
             src/ai_marketplace_monitor/webui/account_sessions.py \
+            src/ai_marketplace_monitor/webui/account_bridge.py \
+            src/ai_marketplace_monitor/webui/account_bridge_api.py \
+            tests/test_account_bridge.py \
             tests/test_account_browser_failures.py \
             tests/test_recaptcha_login_requests.py
 
@@ -50,11 +59,14 @@ jobs:
       - name: Test login using controlled HTML and fake sessions
         run: |
           uv run --no-sync python -m pytest -q \
+            tests/test_account_bridge.py \
             tests/test_manual_account_login.py \
             tests/test_account_browser_failures.py \
             tests/test_facebook_sessions.py \
             tests/test_hanggent_integration.py \
-            tests/test_recaptcha_login_requests.py
+            tests/test_recaptcha_login_requests.py \
+            tests/test_run_receipts.py \
+            tests/test_receipt_empty_results.py
 
       - name: Build wheel and verify packaged login source
         run: |
@@ -68,6 +80,8 @@ jobs:
           with ZipFile(wheel) as archive:
               for relative in (
                   "ai_marketplace_monitor/webui/account_sessions.py",
+                  "ai_marketplace_monitor/webui/account_bridge.py",
+                  "ai_marketplace_monitor/webui/account_bridge_api.py",
                   "ai_marketplace_monitor/facebook_session.py",
                   "ai_marketplace_monitor/webui/hanggent_integration.py",
               ):

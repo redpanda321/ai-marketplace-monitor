@@ -146,11 +146,13 @@ class AccountBridges:
             db.execute(
                 "CREATE TABLE IF NOT EXISTS generations (owner INTEGER PRIMARY KEY, generation INTEGER NOT NULL)"
             )
-            db.execute("""CREATE TABLE IF NOT EXISTS bridges (
-                id TEXT PRIMARY KEY, owner INTEGER NOT NULL, capability_hash TEXT NOT NULL,
-                deadline REAL NOT NULL, generation INTEGER NOT NULL, fingerprint TEXT NOT NULL,
-                status TEXT NOT NULL, operation TEXT, payload_digest TEXT, state_digest TEXT,
-                error_code TEXT)""")
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS bridges ("
+                "id TEXT PRIMARY KEY, owner INTEGER NOT NULL, capability_hash TEXT NOT NULL, "
+                "deadline REAL NOT NULL, generation INTEGER NOT NULL, fingerprint TEXT NOT NULL, "
+                "status TEXT NOT NULL, operation TEXT, payload_digest TEXT, state_digest TEXT, "
+                "error_code TEXT)"
+            )
         self.path.chmod(0o600)
         self.recover()
 

@@ -87,7 +87,11 @@ def login_request_allowed(url: str) -> bool:
 
 class AccountBrowser:
     def __init__(
-        self, user_id: int, home: Path, read_config: Callable[[], str], control_lock: Any,
+        self,
+        user_id: int,
+        home: Path,
+        read_config: Callable[[], str],
+        control_lock: Any,
         publish_guard: Callable[[], Any] = nullcontext,
     ) -> None:
         self.user_id = user_id
@@ -418,8 +422,14 @@ class AccountBrowser:
 
 
 class AccountSessions:
-    def __init__(self, root: Path, read_config: Callable[[int], str], *, control_lock: Any = None,
-                 publish_guard: Callable[[int], Any] = lambda owner: nullcontext()) -> None:
+    def __init__(
+        self,
+        root: Path,
+        read_config: Callable[[int], str],
+        *,
+        control_lock: Any = None,
+        publish_guard: Callable[[int], Any] = lambda owner: nullcontext(),
+    ) -> None:
         self.root = root
         self.read_config = read_config
         self.lock = control_lock if control_lock is not None else threading.Lock()
