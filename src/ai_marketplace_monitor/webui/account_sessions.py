@@ -11,6 +11,7 @@ import threading
 import time
 import traceback
 from concurrent.futures import Future
+from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Literal
@@ -86,13 +87,15 @@ def login_request_allowed(url: str) -> bool:
 
 class AccountBrowser:
     def __init__(
-        self, user_id: int, home: Path, read_config: Callable[[], str], control_lock: Any
+        self, user_id: int, home: Path, read_config: Callable[[], str], control_lock: Any,
+        publish_guard: Callable[[], Any] = nullcontext,
     ) -> None:
         self.user_id = user_id
         self.id = uuid4().hex
         self.store = FacebookSessionStore(home)
         self.read_config = read_config
         self.control_lock = control_lock
+        self.publish_guard = publish_guard
         self.config = read_config()
         self.failure: BrowserFailure | None = None
         self._secrets: set[str] = set()
@@ -324,7 +327,7 @@ class AccountBrowser:
                                     stage = "inspection"
                                     future.set_result(self.inspect(page))
                                     continue
-                                with self.control_lock:
+                                with self.control_lock, self.publish_guard():
                                     if self.closed.is_set() or account_fingerprint(
                                         self.config
                                     ) != account_fingerprint(self.read_config()):
@@ -415,10 +418,12 @@ class AccountBrowser:
 
 
 class AccountSessions:
-    def __init__(self, root: Path, read_config: Callable[[int], str]) -> None:
+    def __init__(self, root: Path, read_config: Callable[[int], str], *, control_lock: Any = None,
+                 publish_guard: Callable[[int], Any] = lambda owner: nullcontext()) -> None:
         self.root = root
         self.read_config = read_config
-        self.lock = threading.Lock()
+        self.lock = control_lock if control_lock is not None else threading.Lock()
+        self.publish_guard = publish_guard
         self.sessions = {}
 
     def status(self, user_id: int) -> dict[str, Any]:
@@ -453,6 +458,7 @@ class AccountSessions:
                     self.root / f"u{user_id}",
                     lambda: self.read_config(user_id),
                     self.lock,
+                    lambda: self.publish_guard(user_id),
                 )
                 self.sessions[user_id] = current
             return current.public()

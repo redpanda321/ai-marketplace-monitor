@@ -57,6 +57,7 @@ from .config_api import ConfigFileService
 from .config_auth import extract_credentials
 from .found_export import iter_found_csv, iter_found_rows
 from .hanggent_integration import HanggentIntegrationService, HanggentWatch
+from .account_bridge_api import register_bridge_routes
 from .log_handler import LogBroadcastHandler
 
 # Ensure the vendored toml-edit-js WASM bundle is served with the right
@@ -351,6 +352,8 @@ def create_app(
         if can_manage_config:
             result["config_files"] = [f.__dict__ for f in config_service.list_files()]
         return result
+
+    register_bridge_routes(app, hanggent_integration, require_integration_token)
 
     def account_operation(user_id: int, operation: Callable[[], Dict[str, Any]]) -> Dict[str, Any]:
         if user_id < 1:
