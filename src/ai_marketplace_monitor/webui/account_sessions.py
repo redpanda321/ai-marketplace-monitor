@@ -17,7 +17,6 @@ from ..facebook_session import (
     FacebookSessionStore,
     account_fingerprint,
     facebook_session_error,
-    tomllib,
     verify_facebook_session,
 )
 
@@ -126,15 +125,6 @@ class AccountBrowser:
                 context.set_default_timeout(5000)
                 page = context.new_page()
                 page.goto(MARKETPLACE_URL, wait_until="domcontentloaded", timeout=30000)
-                credentials = tomllib.loads(self.config).get("marketplace", {}).get("facebook", {})
-                if (
-                    page.locator('input[name="email"]:visible').count()
-                    and credentials.get("username")
-                    and credentials.get("password")
-                ):
-                    page.locator('input[name="email"]:visible').fill(credentials["username"])
-                    page.locator('input[name="pass"]:visible').fill(credentials["password"])
-                    page.keyboard.press("Enter")
                 self.state = "login_required"
                 self.ready.set()
                 while not self.closed.is_set() and time.monotonic() < self.deadline:
