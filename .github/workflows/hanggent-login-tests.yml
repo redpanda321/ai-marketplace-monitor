@@ -53,6 +53,22 @@ jobs:
             tests/test_account_browser_failures.py \
             tests/test_recaptcha_login_requests.py
 
+      - name: Check native session publication source
+        run: |
+          files=(
+            src/ai_marketplace_monitor/facebook.py
+            src/ai_marketplace_monitor/facebook_session.py
+            src/ai_marketplace_monitor/monitor.py
+            src/ai_marketplace_monitor/tenant_worker.py
+            src/ai_marketplace_monitor/webui/run_receipts.py
+            src/ai_marketplace_monitor/webui/hanggent_integration.py
+            tests/test_run_receipts.py
+            tests/test_native_session_candidate.py
+          )
+          uv run --no-sync ruff check --no-fix "${files[@]}"
+          uv run --no-sync ruff format --check "${files[@]}"
+          uv run --no-sync black --check "${files[@]}"
+
       - name: Install Chromium and system dependencies
         run: uv run --no-sync python -m playwright install --with-deps chromium
 
@@ -66,6 +82,7 @@ jobs:
             tests/test_hanggent_integration.py \
             tests/test_recaptcha_login_requests.py \
             tests/test_run_receipts.py \
+            tests/test_native_session_candidate.py \
             tests/test_receipt_empty_results.py
 
       - name: Build wheel and verify packaged login source
@@ -84,6 +101,10 @@ jobs:
                   "ai_marketplace_monitor/webui/account_bridge_api.py",
                   "ai_marketplace_monitor/facebook_session.py",
                   "ai_marketplace_monitor/webui/hanggent_integration.py",
+                  "ai_marketplace_monitor/facebook.py",
+                  "ai_marketplace_monitor/monitor.py",
+                  "ai_marketplace_monitor/tenant_worker.py",
+                  "ai_marketplace_monitor/webui/run_receipts.py",
               ):
                   assert archive.read(relative) == Path("src", relative).read_bytes(), relative
           print(f"Verified login source in {wheel.name}")

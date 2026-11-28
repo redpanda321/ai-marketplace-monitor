@@ -89,9 +89,15 @@ class FacebookSessionStore:
         temporary.chmod(0o600)
         os.replace(temporary, path)
 
-    def save_verified(self, state: dict, config: str) -> None:
+    def save_verified(
+        self,
+        state: dict,
+        config: str,
+        verified_at: datetime | None = None,
+        expires_at: datetime | None = None,
+    ) -> None:
         # Caller must have verified the live authenticated Marketplace page.
-        now = datetime.now(timezone.utc)
+        now = verified_at or datetime.now(timezone.utc)
         self._write(self.state_path, state)
         self._write(
             self.metadata_path,
@@ -99,7 +105,9 @@ class FacebookSessionStore:
                 "schema_version": 1,
                 "status": "verified",
                 "verified_at": now.isoformat(),
-                "expires_at": (now + timedelta(seconds=SESSION_TTL_SECONDS)).isoformat(),
+                "expires_at": (
+                    expires_at or now + timedelta(seconds=SESSION_TTL_SECONDS)
+                ).isoformat(),
                 "state_digest": hashlib.sha256(self.state_path.read_bytes()).hexdigest(),
                 "account_fingerprint": account_fingerprint(config),
             },
@@ -132,22 +140,28 @@ class FacebookSessionStore:
         except (OSError, ValueError):
             metadata, valid = {}, False
         return {
-            "status": "verified"
-            if valid
-            else ("expired" if self.state_path.exists() else "login_required"),
+            "status": (
+                "verified"
+                if valid
+                else ("expired" if self.state_path.exists() else "login_required")
+            ),
             "session_valid": valid,
             "credentials_configured": configured,
-            "username_hint": (str(credentials.get("username", ""))[:2] + "***")
-            if credentials.get("username")
-            else None,
+            "username_hint": (
+                (str(credentials.get("username", ""))[:2] + "***")
+                if credentials.get("username")
+                else None
+            ),
             "verified_at": metadata.get("verified_at"),
             "expires_at": metadata.get("expires_at"),
-            "blocked_reason": None
-            if valid
-            else (
-                "marketplace_session_unverified"
-                if configured or self.state_path.exists()
-                else "marketplace_credentials_missing"
+            "blocked_reason": (
+                None
+                if valid
+                else (
+                    "marketplace_session_unverified"
+                    if configured or self.state_path.exists()
+                    else "marketplace_credentials_missing"
+                )
             ),
         }
 

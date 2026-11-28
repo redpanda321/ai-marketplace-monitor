@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import os
 import signal
 import sqlite3
@@ -16,9 +17,9 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 
-from ..facebook_session import FacebookSessionStore
+from ..facebook_session import SESSION_TTL_SECONDS, FacebookSessionStore, account_fingerprint
 
 try:
     import tomllib
@@ -39,8 +40,16 @@ def digest(identity: dict[str, int], rows: list[dict[str, Any]]) -> str:
 
 
 class RunReceipts:
-    def __init__(self, root: Path, start_worker: bool = True) -> None:
+    def __init__(
+        self,
+        root: Path,
+        start_worker: bool = True,
+        read_config: Callable[[int], str] | None = None,
+        control_lock: Any = None,
+    ) -> None:
         self.root = root
+        self.read_config = read_config
+        self.control_lock = control_lock or threading.RLock()
         self.path = root / "run-receipts.sqlite3"
         with self.connect() as db:
             db.execute(
@@ -181,7 +190,15 @@ class RunReceipts:
             time.sleep(1)
 
     def execute(self, key: str, run_id: int, config: str, receipt: dict[str, Any]) -> None:
+        user_id, watch_id = (int(part[1:]) for part in key.split("_")[1:])
+        if any(
+            receipt.get(field) != value
+            for field, value in (("user_id", user_id), ("watch_id", watch_id), ("run_id", run_id))
+        ):
+            return
         rows = None
+        candidate = None
+        started_at = receipt.get("started_at")
         receipt.update(status="failed", error_code="source_worker_failed")
         try:
             home = self.root / f"u{receipt['user_id']}"
@@ -192,6 +209,7 @@ class RunReceipts:
                 snapshot.write_text(config, encoding="utf-8")
                 snapshot.chmod(0o600)
                 output = folder / "output.json"
+                candidate_path = folder / "verified-session.json"
                 with self.connect() as db:
                     state = db.execute(
                         "SELECT session_state FROM jobs WHERE watch=? AND run=?", (key, run_id)
@@ -215,6 +233,7 @@ class RunReceipts:
                         "FACEBOOK_USERNAME": "",
                         "FACEBOOK_PASSWORD": "",
                         "AIMM_FACEBOOK_SESSION_FILE": str(session_file) if state else "",
+                        "AIMM_VERIFIED_SESSION_CANDIDATE": str(candidate_path),
                     },
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
@@ -235,6 +254,13 @@ class RunReceipts:
                         if result.get("session_valid") is True and isinstance(
                             result.get("results"), list
                         ):
+                            if candidate_path.exists():
+                                if (
+                                    candidate_path.is_symlink()
+                                    or candidate_path.stat().st_size > 5_000_000
+                                ):
+                                    raise ValueError("Invalid private session candidate")
+                                candidate = json.loads(candidate_path.read_text(encoding="utf-8"))
                             rows = result["results"]
                             identity = {
                                 field: receipt[field]
@@ -248,16 +274,47 @@ class RunReceipts:
                                 results_digest=digest(identity, rows),
                             )
                     elif code == 2:
-                        if state:
-                            FacebookSessionStore(home).invalidate_snapshot(state, config)
                         receipt.update(
                             status="paused_needs_attention",
                             error_code="marketplace_session_unverified",
                         )
         except Exception:
-            receipt["error_code"] = "source_worker_failed"
+            receipt.update(status="failed", session_valid=False, error_code="source_worker_failed")
+            rows = None
+            candidate = None
         receipt["completed_at"] = now()
-        with self.connect() as db:
+        with self.control_lock, self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            current = db.execute(
+                "SELECT user,status,deadline,config,receipt FROM jobs WHERE watch=? AND run=?",
+                (key, run_id),
+            ).fetchone()
+            if (
+                not current
+                or current[0] != user_id
+                or current[1] != "running"
+                or current[2] <= time.time()
+                or current[3] != config
+                or json.loads(current[4]).get("started_at") != started_at
+            ):
+                return
+            if candidate is not None and receipt["status"] == "completed":
+                try:
+                    current_config = self.read_config(user_id) if self.read_config else config
+                    if account_fingerprint(current_config) != account_fingerprint(config):
+                        raise ValueError("Account changed")
+                    self.publish_candidate(home, candidate, config, started_at, state)
+                except Exception:
+                    receipt.update(
+                        status="failed",
+                        session_valid=False,
+                        error_code="source_session_publish_failed",
+                    )
+                    receipt.pop("result_count", None)
+                    receipt.pop("results_digest", None)
+                    rows = None
+            if receipt["status"] == "paused_needs_attention" and state:
+                FacebookSessionStore(home).invalidate_snapshot(state, config)
             db.execute(
                 "UPDATE jobs SET status=?,receipt=?,results=?,config='',session_state=NULL WHERE watch=? AND run=? AND status='running'",
                 (
@@ -268,3 +325,65 @@ class RunReceipts:
                     run_id,
                 ),
             )
+
+    @staticmethod
+    def publish_candidate(
+        home: Path,
+        candidate: dict,
+        config: str,
+        started_at: str,
+        expected_state: str | None = None,
+    ) -> None:
+        verified = candidate["verified_at"]
+        if (
+            candidate.get("schema_version") != 1
+            or type(verified) not in (int, float)
+            or not datetime.fromisoformat(started_at).timestamp() <= verified <= time.time()
+            or time.time() >= verified + SESSION_TTL_SECONDS
+        ):
+            raise ValueError("Invalid session verification time")
+        state = candidate["storage_state"]
+        if (
+            not isinstance(state, dict)
+            or not isinstance(state.get("cookies"), list)
+            or not isinstance(state.get("origins"), list)
+            or not any(
+                isinstance(cookie, dict)
+                and cookie.get("name") == "c_user"
+                and cookie.get("value")
+                and cookie.get("domain", "").lstrip(".") in ("facebook.com", "www.facebook.com")
+                for cookie in state["cookies"]
+            )
+        ):
+            raise ValueError("Invalid verified session state")
+        if expected_state:
+            expected_accounts = {
+                cookie.get("value")
+                for cookie in json.loads(expected_state)["cookies"]
+                if cookie.get("name") == "c_user"
+            }
+            actual_accounts = {
+                cookie.get("value")
+                for cookie in state["cookies"]
+                if cookie.get("name") == "c_user"
+            }
+            if actual_accounts != expected_accounts:
+                raise ValueError("Verified account changed")
+        expires = verified + SESSION_TTL_SECONDS
+        for cookie in state["cookies"]:
+            if not isinstance(cookie, dict):
+                raise ValueError("Invalid session cookie")
+            if cookie.get("name") in ("c_user", "xs"):
+                cookie_expiry = cookie.get("expires", -1)
+                if type(cookie_expiry) not in (int, float) or not math.isfinite(cookie_expiry):
+                    raise ValueError("Invalid session cookie expiry")
+                if cookie_expiry > 0:
+                    expires = min(expires, cookie_expiry)
+        if expires <= time.time():
+            raise ValueError("Expired session cookie")
+        FacebookSessionStore(home).save_verified(
+            state,
+            config,
+            datetime.fromtimestamp(verified, timezone.utc),
+            datetime.fromtimestamp(expires, timezone.utc),
+        )

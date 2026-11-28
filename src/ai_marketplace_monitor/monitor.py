@@ -672,6 +672,7 @@ class MarketplaceMonitor:
                     )
                 if not getattr(marketplace, "session_verified", False):
                     raise PermissionError("Marketplace session was not verified")
+                self.verified_session_candidate = marketplace.verified_session_candidate
                 return rows
             self.search_item(marketplace_config, marketplace, item_config)
             return
