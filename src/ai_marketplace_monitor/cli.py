@@ -33,17 +33,90 @@ _DEFAULT_CONFIG_TEMPLATE = """\
 [marketplace.facebook]
 username = "${FACEBOOK_USERNAME}"
 password = "${FACEBOOK_PASSWORD}"
-search_city = "houston"
+search_city = "coquitlam"
+city_name = "Coquitlam, BC"
+radius = 80
+currency = "CAD"
+search_interval = "10m"
+max_search_interval = "30m"
+notify = "me"
 
-[item.example]
-# Describe what you want to find. Duplicate this block for each item.
-search_phrases = "gopro hero"
-# min_price = 50
-# max_price = 300
+[marketplace.craigslist]
+market_type = "craigslist"
+search_city = "coquitlam"
+city_name = "Coquitlam, BC"
+radius = 80
+currency = "CAD"
+search_interval = "10m"
+max_search_interval = "30m"
+notify = "me"
+search_url = "https://vancouver.craigslist.org/search/cta?query={query}&postal={postal_code}&search_distance={radius_km}"
+result_selector = ".cl-search-result"
+title_selector = ".title"
+price_selector = ".priceinfo"
+location_selector = ".meta"
+detail_selector = "#postingbody, .postingbody, main"
+
+# These connectors accept an authorised public HTML search URL, but direct automated
+# search is disabled because the sites currently prohibit it or deny robots access.
+[marketplace.kijiji]
+market_type = "kijiji"
+enabled = false
+robots_allowed = false
+blocked_reason = "Kijiji robots.txt disallows vehicle search parameters and RSS search."
+
+[marketplace.tesla]
+market_type = "tesla"
+enabled = false
+robots_allowed = false
+blocked_reason = "Tesla denies automated robots-policy and inventory access."
+
+[marketplace.cargurus]
+market_type = "cargurus"
+enabled = false
+robots_allowed = false
+blocked_reason = "CarGurus robots.txt disallows automated search and listing APIs."
+
+[marketplace.carpages]
+market_type = "carpages"
+enabled = false
+robots_allowed = true
+blocked_reason = "Set a verified Carpages search_url and result_selector before enabling."
+
+[marketplace.autotrader]
+market_type = "autotrader"
+enabled = false
+robots_allowed = false
+blocked_reason = "AutoTrader robots.txt disallows /lst search and listing-search APIs."
+
+[ai.openai]
+api_key = "${OPENAI_API_KEY}"
+model = "gpt-4o-mini"
+
+[item.tesla_model_y_2024]
+search_phrases = ["2024 Tesla Model Y", "Tesla Model Y 2024"]
+category = "vehicles"
+date_listed = "all"
+delivery_method = "local_pick_up"
+ai = "openai"
+rating = 5
+notify = "me"
+description = "2024 Tesla Model Y within 80 km of Coquitlam, BC; white exterior; under 65,000 km; clean/normal, non-branded title; disclosed accident damage or repair cost below CAD 3,000."
+prompt = '''Evaluate this vehicle listing strictly. Give Rating 5 only when the listing clearly describes a 2024 Tesla Model Y with a white exterior, odometer below 65,000 km, a clean/normal non-salvage and non-rebuilt title, and total disclosed accident damage, insurance claims, or estimated repair cost below CAD 3,000. Treat miles as equivalent only when below 40,389 miles. Missing or ambiguous model year, mileage, exterior color, title status, or damage/claim amount must receive Rating 2 or lower. Reject parts-only, lease takeover, deposit, wanted, salvage, rebuilt, branded-title, and scam listings. In every summary explicitly report "Seller: private/dealer/unknown" and "Drivetrain: RWD/AWD/unknown" without guessing.'''
 
 [user.me]
-# One of these notification channels is required.
-# pushbullet_token = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+# New matching listings and price reductions on previously seen listings
+# are both emailed. Unchanged listings are not repeated.
+email = "${MARKETPLACE_ALERT_EMAIL}"
+notify_with = "email"
+remind = false
+
+[notification.email]
+smtp_server = "${MARKETPLACE_SMTP_HOST}"
+smtp_port = 587
+smtp_username = "${MARKETPLACE_SMTP_USERNAME}"
+smtp_password = "${MARKETPLACE_SMTP_PASSWORD}"
+smtp_from = "${MARKETPLACE_SMTP_FROM}"
 """
 
 
@@ -158,6 +231,13 @@ def main(
         int,
         typer.Option("--webui-port", help="Port for the web UI. Default: 8467"),
     ] = 8467,
+    webui_base_path: Annotated[
+        str,
+        typer.Option(
+            "--webui-base-path",
+            help="Public reverse-proxy path prefix, for example /marketplace-monitor.",
+        ),
+    ] = "",
     webui_log_retention: Annotated[
         int,
         typer.Option(
@@ -266,6 +346,7 @@ def main(
                             port=webui_port,
                             config_files=monitor.config_files,
                             log_handler=log_broadcast_handler,
+                            base_path=webui_base_path,
                         ),
                         logger=logger,
                     )

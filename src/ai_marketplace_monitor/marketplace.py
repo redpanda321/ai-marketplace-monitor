@@ -20,6 +20,12 @@ from .utils import (
 
 class MarketPlace(Enum):
     FACEBOOK = "facebook"
+    CRAIGSLIST = "craigslist"
+    KIJIJI = "kijiji"
+    TESLA = "tesla"
+    CARGURUS = "cargurus"
+    CARPAGES = "carpages"
+    AUTOTRADER = "autotrader"
 
 
 @dataclass
@@ -377,10 +383,8 @@ class MarketplaceConfig(MarketItemCommonConfig):
             return
         if not isinstance(self.market_type, str):
             raise ValueError(f"Marketplace {hilight(self.market_type)} market must be a string.")
-        if self.market_type.lower() != MarketPlace.FACEBOOK.value:
-            raise ValueError(
-                f"Marketplace {hilight(self.market_type)} market must be {MarketPlace.FACEBOOK.value}."
-            )
+        if self.market_type.lower() not in {market.value for market in MarketPlace}:
+            raise ValueError(f"Marketplace {hilight(self.market_type)} is not supported.")
 
     def handle_language(self: "MarketplaceConfig") -> None:
         if self.language is None:
@@ -497,7 +501,9 @@ class Marketplace(Generic[TMarketplaceConfig, TItemConfig]):
             self.browser = None
             self.page = None
 
-    def create_page(self: "Marketplace", swap_proxy: bool = False) -> Page:
+    def create_page(
+        self: "Marketplace", swap_proxy: bool = False, storage_state: str | None = None
+    ) -> Page:
         assert self.browser is not None
 
         # if there is an existing page, asked to swap_proxy, and there is an proxy_server
@@ -514,11 +520,12 @@ class Marketplace(Generic[TMarketplaceConfig, TItemConfig]):
 
         if self.page is None:
             context = self.browser.new_context(
+                storage_state=storage_state,
                 proxy=(
                     None
                     if self.config.monitor_config is None
                     else self.config.monitor_config.get_proxy_options()
-                )
+                ),
             )
             self.page = context.new_page()
         return self.page

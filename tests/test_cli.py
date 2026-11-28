@@ -1,6 +1,7 @@
 """Tests for `ai_marketplace_monitor`.cli module."""
 
 from dataclasses import asdict
+from pathlib import Path
 from typing import Callable, List, Tuple, Type, Union
 
 import pytest
@@ -30,6 +31,52 @@ def test_command_line_interface(options: List[str], expected: str) -> None:
     result = runner.invoke(cli.app, options)
     assert result.exit_code == 0
     assert expected in result.stdout
+
+
+def test_default_config_targets_coquitlam_area_tesla_model_y(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The seeded Hanggent profile encodes the requested vehicle alert."""
+    environment = {
+        "FACEBOOK_USERNAME": "buyer@example.com",
+        "FACEBOOK_PASSWORD": "facebook-password",
+        "OPENAI_API_KEY": "openai-key",
+        "MARKETPLACE_ALERT_EMAIL": "alerts@example.com",
+        "MARKETPLACE_SMTP_HOST": "smtp.example.com",
+        "MARKETPLACE_SMTP_USERNAME": "sender@example.com",
+        "MARKETPLACE_SMTP_PASSWORD": "smtp-password",
+        "MARKETPLACE_SMTP_FROM": "sender@example.com",
+    }
+    for key, value in environment.items():
+        monkeypatch.setenv(key, value)
+
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(cli._DEFAULT_CONFIG_TEMPLATE, encoding="utf-8")
+    config = Config([config_path])
+
+    marketplace = config.marketplace["facebook"]
+    item = config.item["tesla_model_y_2024"]
+    user = config.user["me"]
+
+    assert marketplace.search_city == ["coquitlam"]
+    assert marketplace.city_name == ["Coquitlam, BC"]
+    assert marketplace.radius == [80]
+    assert marketplace.currency == ["CAD"]
+    assert config.marketplace["craigslist"].enabled is not False
+    assert config.marketplace["craigslist"].robots_allowed is True
+    assert config.marketplace["kijiji"].enabled is False
+    assert config.marketplace["tesla"].enabled is False
+    assert config.marketplace["cargurus"].enabled is False
+    assert config.marketplace["carpages"].enabled is False
+    assert config.marketplace["autotrader"].enabled is False
+    assert item.search_phrases == ["2024 Tesla Model Y", "Tesla Model Y 2024"]
+    assert item.rating == [5]
+    assert "65,000 km" in (item.prompt or "")
+    assert "CAD 3,000" in (item.prompt or "")
+    assert "Seller: private/dealer/unknown" in (item.prompt or "")
+    assert "Drivetrain: RWD/AWD/unknown" in (item.prompt or "")
+    assert user.email == ["alerts@example.com"]
+    assert user.remind is None
 
 
 @pytest.fixture(scope="session")

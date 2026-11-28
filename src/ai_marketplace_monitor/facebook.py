@@ -14,6 +14,7 @@ from currency_converter import CurrencyConverter  # type: ignore
 from playwright.sync_api import Browser, ElementHandle, Page  # type: ignore
 from rich.pretty import pretty_repr
 
+from .facebook_session import MARKETPLACE_URL, verify_facebook_session
 from .listing import Listing
 from .marketplace import ItemConfig, Marketplace, MarketplaceConfig, WebPage
 from .utils import (
@@ -309,7 +310,14 @@ class FacebookMarketplace(Marketplace):
     def login(self: "FacebookMarketplace") -> None:
         assert self.browser is not None
 
-        self.page = self.create_page(swap_proxy=True)
+        session_file = os.environ.get("AIMM_FACEBOOK_SESSION_FILE") or None
+        self.page = self.create_page(swap_proxy=True, storage_state=session_file)
+        if session_file:
+            self.page.goto(MARKETPLACE_URL, wait_until="domcontentloaded", timeout=30000)
+            if verify_facebook_session(self.page) is None:
+                return
+            if not self.config.username or not self.config.password:
+                raise PermissionError("Marketplace saved session requires login")
 
         # Navigate to the URL, no timeout
         self.goto_url(self.initial_url)
@@ -516,9 +524,20 @@ class FacebookMarketplace(Marketplace):
                     marketplace_url + "&".join([f"query={quote(search_phrase)}", *options])
                 )
 
-                found_listings = FacebookSearchResultPage(
-                    self.page, self.translator, self.logger
-                ).get_listings()
+                strict = getattr(self, "require_verified_session", False)
+                if strict:
+                    if verify_facebook_session(self.page) is not None:
+                        raise PermissionError("Marketplace session is not verified")
+                    self.verified_session_candidate = {
+                        "schema_version": 1,
+                        "verified_at": time.time(),
+                        "storage_state": self.page.context.storage_state(),
+                    }
+                result_page = FacebookSearchResultPage(self.page, self.translator, self.logger)
+                result_page.strict_receipt = strict
+                found_listings = result_page.get_listings()
+                if strict:
+                    self.session_verified = True
                 time.sleep(5)
                 if self.logger:
                     self.logger.error(
@@ -536,6 +555,10 @@ class FacebookMarketplace(Marketplace):
                         return
                     counter.increment(CounterItem.LISTING_EXAMINED, item_config.name)
                     found[listing.post_url.split("?")[0]] = True
+                    if strict:
+                        listing.name = item_config.name
+                        yield listing
+                        continue
                     # filter by title and location; skip keyword filtering since we do not have description yet.
                     if not self.check_listing(listing, item_config, description_available=False):
                         counter.increment(CounterItem.EXCLUDED_LISTING, item_config.name)
@@ -736,11 +759,20 @@ class FacebookSearchResultPage(WebPage):
         # if no result is found
         btn = self.page.locator(f"""span:has-text('{self.translator("Browse Marketplace")}')""")
         if btn.count() > 0:
+            if (
+                getattr(self, "strict_receipt", False)
+                and not self.page.get_by_text(
+                    re.compile(re.escape(self.translator("No results found")), re.IGNORECASE)
+                ).count()
+            ):
+                raise ValueError("Source empty-result marker was not verified")
             if self.logger:
                 msg = self._parent_with_cond(
                     btn.first,
-                    lambda x: len(x) == 3
-                    and self.translator("Browse Marketplace") in (x[-1].text_content() or ""),
+                    lambda x: (
+                        len(x) == 3
+                        and self.translator("Browse Marketplace") in (x[-1].text_content() or "")
+                    ),
                     1,
                 )
                 self.logger.info(f"{hilight('[Retrieve]', 'dim')} {msg}")
@@ -755,6 +787,8 @@ class FacebookSearchResultPage(WebPage):
         except KeyboardInterrupt:
             raise
         except Exception as e:
+            if getattr(self, "strict_receipt", False):
+                raise ValueError("Source search layout could not be verified") from e
             filename = datetime.datetime.now().strftime("debug_%Y%m%d_%H%M%S.html")
             if self.logger:
                 self.logger.error(
@@ -820,6 +854,8 @@ class FacebookSearchResultPage(WebPage):
                         f"{hilight('[Retrieve]', 'fail')} Failed to parse search results {idx + 1} listing: {e}"
                     )
                 continue
+        if getattr(self, "strict_receipt", False) and not listings:
+            raise ValueError("Source returned no verifiable listings or empty-result marker")
         return listings
 
 
@@ -995,8 +1031,9 @@ class FacebookRegularItemPage(FacebookItemPage):
 
             result = self._parent_with_cond(
                 condition_element,
-                lambda x: len(x) >= 2
-                and self.translator("Condition") in (x[0].text_content() or ""),
+                lambda x: (
+                    len(x) >= 2 and self.translator("Condition") in (x[0].text_content() or "")
+                ),
                 1,
             )
             return result
@@ -1017,8 +1054,10 @@ class FacebookRegularItemPage(FacebookItemPage):
             )
             return self._parent_with_cond(
                 approximate_element,
-                lambda x: len(x) == 2
-                and self.translator("Location is approximate") in (x[1].text_content() or ""),
+                lambda x: (
+                    len(x) == 2
+                    and self.translator("Location is approximate") in (x[1].text_content() or "")
+                ),
                 0,
             )
         except KeyboardInterrupt:
@@ -1203,9 +1242,11 @@ class FacebookAutoItemWithAboutAndDescriptionPage(FacebookRegularItemPage):
                 about_element,
                 # find an array of elements with the first one being "About this vehicle"
                 # and the second child has actual content (not just whitespace)
-                lambda x: len(x) > 1
-                and self.translator("About this vehicle") in (x[0].text_content() or "")
-                and (x[1].text_content() or "").replace("\xa0", "").strip(),
+                lambda x: (
+                    len(x) > 1
+                    and self.translator("About this vehicle") in (x[0].text_content() or "")
+                    and (x[1].text_content() or "").replace("\xa0", "").strip()
+                ),
                 # Extract all texts, using inner_text to preserve line breaks, and add emojis
                 lambda x: _add_vehicle_emojis(
                     "\n".join([child.inner_text() or "" for child in x])
@@ -1229,16 +1270,20 @@ class FacebookAutoItemWithAboutAndDescriptionPage(FacebookRegularItemPage):
                 description_header,
                 # find an array of elements with the first one being "Seller's description"
                 # and the second child has actual content (not just whitespace)
-                lambda x: len(x) > 1
-                and self.translator("Seller's description") in (x[0].text_content() or "")
-                and (x[1].text_content() or "").replace("\xa0", "").strip(),
+                lambda x: (
+                    len(x) > 1
+                    and self.translator("Seller's description") in (x[0].text_content() or "")
+                    and (x[1].text_content() or "").replace("\xa0", "").strip()
+                ),
                 # then, drill down from the second child
                 lambda x: self._children_with_cond(
                     x[1],
                     # find the an array of elements
                     lambda y: len(y) > 1,
                     # and return the texts.
-                    lambda y: f"""\n\n{self.translator("Seller's description")}\n\n{y[0].text_content() or self.translator("**unspecified**")}""",
+                    lambda y: (
+                        f"""\n\n{self.translator("Seller's description")}\n\n{y[0].text_content() or self.translator("**unspecified**")}"""
+                    ),
                 ),
             )
         except KeyboardInterrupt:
@@ -1282,16 +1327,20 @@ class FacebookAutoItemWithDescriptionPage(FacebookAutoItemWithAboutAndDescriptio
                 description_header,
                 # find an array of elements with the first one being "Seller's description"
                 # and the second child has actual content (not just whitespace)
-                lambda x: len(x) > 1
-                and self.translator("Seller's description") in (x[0].text_content() or "")
-                and (x[1].text_content() or "").replace("\xa0", "").strip(),
+                lambda x: (
+                    len(x) > 1
+                    and self.translator("Seller's description") in (x[0].text_content() or "")
+                    and (x[1].text_content() or "").replace("\xa0", "").strip()
+                ),
                 # then, drill down from the second child
                 lambda x: self._children_with_cond(
                     x[1],
                     # find the an array of elements
                     lambda y: len(y) > 2,
                     # and return the texts.
-                    lambda y: f"""\n\n{self.translator("Seller's description")}\n\n{y[1].text_content() or self.translator("**unspecified**")}""",
+                    lambda y: (
+                        f"""\n\n{self.translator("Seller's description")}\n\n{y[1].text_content() or self.translator("**unspecified**")}"""
+                    ),
                 ),
             )
         except KeyboardInterrupt:
@@ -1312,9 +1361,11 @@ class FacebookAutoItemWithDescriptionPage(FacebookAutoItemWithAboutAndDescriptio
                 description_header,
                 # find an array of elements with the first one being "Seller's description"
                 # and the second child has actual content (not just whitespace)
-                lambda x: len(x) > 1
-                and self.translator("Seller's description") in (x[0].text_content() or "")
-                and (x[1].text_content() or "").replace("\xa0", "").strip(),
+                lambda x: (
+                    len(x) > 1
+                    and self.translator("Seller's description") in (x[0].text_content() or "")
+                    and (x[1].text_content() or "").replace("\xa0", "").strip()
+                ),
                 # then, drill down from the second child
                 lambda x: self._children_with_cond(
                     x[1],

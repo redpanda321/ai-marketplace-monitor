@@ -22,11 +22,20 @@ from .ai import (
 from .facebook import FacebookMarketplace
 from .marketplace import TItemConfig, TMarketplaceConfig
 from .notification import NotificationConfig
+from .public_web import PublicWebMarketplace
 from .region import RegionConfig
 from .user import User, UserConfig
 from .utils import MonitorConfig, Translator, hilight, merge_dicts
 
-supported_marketplaces = {"facebook": FacebookMarketplace}
+supported_marketplaces = {
+    "facebook": FacebookMarketplace,
+    "craigslist": PublicWebMarketplace,
+    "kijiji": PublicWebMarketplace,
+    "tesla": PublicWebMarketplace,
+    "cargurus": PublicWebMarketplace,
+    "carpages": PublicWebMarketplace,
+    "autotrader": PublicWebMarketplace,
+}
 supported_ai_backends = {
     "deepseek": DeepSeekBackend,
     "gemini": GeminiBackend,

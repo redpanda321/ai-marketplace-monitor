@@ -33,6 +33,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     VNC_PORT=5900 \
     AIMM_WEBUI_HOST=0.0.0.0 \
     AIMM_WEBUI_PORT=8467 \
+    AIMM_WEBUI_BASE_PATH=/ \
     AIMM_ENABLE_VNC=1 \
     AIMM_NOVNC_DIR=/usr/share/novnc \
     AIMM_VNC_HOST=127.0.0.1 \
@@ -43,6 +44,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 #   - websockify + novnc: browser-based VNC client
 #   - supervisor: process manager
 #   - ca-certificates, curl, git: misc tooling
+#   - libatomic1: required by the Node runtime bundled with Playwright
 #   - fonts and libs needed by Chromium are installed by `playwright install --with-deps`
 RUN apt-get update && apt-get install -y --no-install-recommends \
         xvfb \
@@ -52,6 +54,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         websockify \
         novnc \
         ca-certificates \
+        libatomic1 \
         curl \
         git \
         tini \

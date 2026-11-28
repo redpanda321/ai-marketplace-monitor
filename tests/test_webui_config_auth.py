@@ -55,6 +55,17 @@ def test_extract_returns_creds_from_any_marketplace(tmp_path: Path) -> None:
     assert got.password == "y"
 
 
+def test_extract_expands_environment_references_in_config(tmp_path: Path) -> None:
+    p = _write(
+        tmp_path,
+        '[marketplace.facebook]\nusername = "${FACEBOOK_USERNAME}"\npassword = "${FACEBOOK_PASSWORD}"\n',
+    )
+    with patch.dict(os.environ, {"FACEBOOK_USERNAME": "buyer@example.com", "FACEBOOK_PASSWORD": "secret"}):
+        got = extract_credentials([p])
+    assert got.username == "buyer@example.com"
+    assert got.password == "secret"
+
+
 def test_extract_tolerates_malformed_file(tmp_path: Path) -> None:
     p = _write(tmp_path, "not valid = = toml")
     got = extract_credentials([p])
@@ -81,6 +92,42 @@ def test_extract_falls_back_to_env_vars(tmp_path: Path) -> None:
     """When config has no credentials, FACEBOOK_USERNAME/PASSWORD are used."""
     p = _write(tmp_path, "[marketplace.facebook]\n")
     with patch.dict(os.environ, {"FACEBOOK_USERNAME": "envuser", "FACEBOOK_PASSWORD": "envpass"}):
+        got = extract_credentials([p])
+    assert got.username == "envuser"
+    assert got.password == "envpass"
+
+
+def test_extract_prefers_dedicated_webui_env_vars(tmp_path: Path) -> None:
+    p = _write(
+        tmp_path,
+        '[marketplace.facebook]\nusername = "cfguser"\npassword = "cfgpass"\n',
+    )
+    with patch.dict(
+        os.environ,
+        {
+            "AIMM_WEBUI_USERNAME": "webadmin",
+            "AIMM_WEBUI_PASSWORD": "webpass",
+            "FACEBOOK_USERNAME": "fbuser",
+            "FACEBOOK_PASSWORD": "fbpass",
+        },
+        clear=True,
+    ):
+        got = extract_credentials([p])
+    assert got.username == "webadmin"
+    assert got.password == "webpass"
+
+
+def test_extract_ignores_unexpanded_config_placeholders(tmp_path: Path) -> None:
+    p = _write(
+        tmp_path,
+        '[marketplace.facebook]\nusername = "${FACEBOOK_USERNAME}"\n'
+        'password = "${FACEBOOK_PASSWORD}"\n',
+    )
+    with patch.dict(
+        os.environ,
+        {"FACEBOOK_USERNAME": "envuser", "FACEBOOK_PASSWORD": "envpass"},
+        clear=True,
+    ):
         got = extract_credentials([p])
     assert got.username == "envuser"
     assert got.password == "envpass"
