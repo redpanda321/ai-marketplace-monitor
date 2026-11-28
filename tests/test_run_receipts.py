@@ -1,5 +1,6 @@
 import json
 import subprocess
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,48 @@ CONFIG = '[marketplace.facebook]\nusername="qa"\npassword="private-password"\n'
 def store(tmp_path: Path) -> RunReceipts:
     (tmp_path / "u7").mkdir(exist_ok=True)
     return RunReceipts(tmp_path, start_worker=False)
+
+
+def test_native_worker_success_persists_reusable_private_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from ai_marketplace_monitor.facebook_session import FacebookSessionStore
+
+    runs = store(tmp_path)
+    runs.enqueue("hanggent_u7_w12", 19, CONFIG)
+    state = {
+        "cookies": [
+            {"name": "c_user", "value": "fake-account", "domain": ".facebook.com", "path": "/"}
+        ],
+        "origins": [],
+    }
+
+    def process(args: list[str], **kwargs: Any) -> Any:
+        output = Path(args[-1])
+        candidate = {"schema_version": 1, "verified_at": time.time(), "storage_state": state}
+        output.with_name("verified-session.json").write_text(json.dumps(candidate))
+        output.write_text(json.dumps({"session_valid": True, "results": []}))
+        return type("Process", (), {"wait": lambda *args, **kwargs: 0})()
+
+    monkeypatch.setattr(subprocess, "Popen", process)
+    runs.execute(*runs.claim())
+    assert json.loads(FacebookSessionStore(tmp_path / "u7").snapshot(CONFIG)) == state
+    assert "fake-account" not in json.dumps(runs.read("hanggent_u7_w12", 19, True))
+    runs.enqueue("hanggent_u7_w12", 20, CONFIG)
+    with runs.connect() as db:
+        assert (
+            json.loads(db.execute("SELECT session_state FROM jobs WHERE run=20").fetchone()[0])
+            == state
+        )
+
+    def reused_process(args: list[str], **kwargs: Any) -> Any:
+        assert json.loads(Path(kwargs["env"]["AIMM_FACEBOOK_SESSION_FILE"]).read_text()) == state
+        Path(args[-1]).write_text(json.dumps({"session_valid": True, "results": []}))
+        return type("Process", (), {"wait": lambda *args, **kwargs: 0})()
+
+    monkeypatch.setattr(subprocess, "Popen", reused_process)
+    runs.execute(*runs.claim())
+    assert runs.read("hanggent_u7_w12", 20)["status"] == "completed"
 
 
 def test_concurrent_retry_and_restart_preserve_one_receipt(tmp_path: Path) -> None:

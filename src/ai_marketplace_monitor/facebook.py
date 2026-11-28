@@ -528,6 +528,11 @@ class FacebookMarketplace(Marketplace):
                 if strict:
                     if verify_facebook_session(self.page) is not None:
                         raise PermissionError("Marketplace session is not verified")
+                    self.verified_session_candidate = {
+                        "schema_version": 1,
+                        "verified_at": time.time(),
+                        "storage_state": self.page.context.storage_state(),
+                    }
                 result_page = FacebookSearchResultPage(self.page, self.translator, self.logger)
                 result_page.strict_receipt = strict
                 found_listings = result_page.get_listings()

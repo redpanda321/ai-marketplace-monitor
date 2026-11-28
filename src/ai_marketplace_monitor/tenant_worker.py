@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -24,6 +25,12 @@ def main() -> int:
             monitor.config_files = [Path(sys.argv[2])]
         rows = monitor.run_item_once(watch_key, collect_only=scoped)
         if scoped:
+            candidate_path = os.environ.get("AIMM_VERIFIED_SESSION_CANDIDATE")
+            candidate = getattr(monitor, "verified_session_candidate", None)
+            if candidate_path and candidate is not None:
+                descriptor = os.open(candidate_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                    json.dump(candidate, stream)
             Path(sys.argv[3]).write_text(
                 json.dumps({"session_valid": True, "results": rows}), encoding="utf-8"
             )
@@ -31,7 +38,7 @@ def main() -> int:
     except PermissionError:
         return 2
     except Exception:
-        logger.exception("Tenant Marketplace Monitor scan failed")
+        logger.error("Tenant Marketplace Monitor scan failed")
         return 1
     finally:
         if monitor is not None:

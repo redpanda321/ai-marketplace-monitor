@@ -45,7 +45,9 @@ class HanggentIntegrationService:
         self._lock = threading.RLock()
         self._queues: dict[int, list[str]] = {}
         self._workers: dict[int, threading.Thread] = {}
-        self.receipts = RunReceipts(self._root, start_worker=False)
+        self.receipts = RunReceipts(
+            self._root, start_worker=False, read_config=self._read, control_lock=self._lock
+        )
         self.accounts = AccountSessions(
             self._root,
             self._read,
