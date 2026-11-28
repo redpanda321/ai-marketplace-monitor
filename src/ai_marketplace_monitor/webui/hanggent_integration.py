@@ -16,8 +16,8 @@ from diskcache import Cache
 
 from ..facebook_session import FacebookSessionStore
 from ..utils import amm_home
-from .account_sessions import AccountSessions
 from .account_bridge import AccountBridges
+from .account_sessions import AccountSessions
 from .config_api import scan_sections
 from .found_export import iter_found_rows
 from .run_receipts import RunReceipts
@@ -47,7 +47,9 @@ class HanggentIntegrationService:
         self._workers: dict[int, threading.Thread] = {}
         self.receipts = RunReceipts(self._root, start_worker=False)
         self.accounts = AccountSessions(
-            self._root, self._read, control_lock=self._lock,
+            self._root,
+            self._read,
+            control_lock=self._lock,
             publish_guard=lambda owner: self.receipts.account_update(owner, cancel_pending=True),
         )
         self.bridges = AccountBridges(self)

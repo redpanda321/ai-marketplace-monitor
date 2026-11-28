@@ -132,22 +132,28 @@ class FacebookSessionStore:
         except (OSError, ValueError):
             metadata, valid = {}, False
         return {
-            "status": "verified"
-            if valid
-            else ("expired" if self.state_path.exists() else "login_required"),
+            "status": (
+                "verified"
+                if valid
+                else ("expired" if self.state_path.exists() else "login_required")
+            ),
             "session_valid": valid,
             "credentials_configured": configured,
-            "username_hint": (str(credentials.get("username", ""))[:2] + "***")
-            if credentials.get("username")
-            else None,
+            "username_hint": (
+                (str(credentials.get("username", ""))[:2] + "***")
+                if credentials.get("username")
+                else None
+            ),
             "verified_at": metadata.get("verified_at"),
             "expires_at": metadata.get("expires_at"),
-            "blocked_reason": None
-            if valid
-            else (
-                "marketplace_session_unverified"
-                if configured or self.state_path.exists()
-                else "marketplace_credentials_missing"
+            "blocked_reason": (
+                None
+                if valid
+                else (
+                    "marketplace_session_unverified"
+                    if configured or self.state_path.exists()
+                    else "marketplace_credentials_missing"
+                )
             ),
         }
 
